@@ -1,4 +1,5 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    std::env::set_var("PROTOC", protoc_bin_vendored::protoc_bin_path()?);
     let protos = ["proto/agent/registry/v1/agent_registry.proto"];
 
     tonic_build::configure()
