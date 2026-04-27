@@ -10,7 +10,6 @@ pub struct AgentConfig {
     pub key_path: String,
     pub bootstrap_token: String,
     pub heartbeat_interval: Duration,
-    pub hypervisor_type: String,
     pub version: String,
 }
 
@@ -30,9 +29,6 @@ impl AgentConfig {
         }
         if self.heartbeat_interval.is_zero() {
             return Err("AGENT_HEARTBEAT_INTERVAL_SEC must be > 0".to_string());
-        }
-        if self.hypervisor_type.trim().is_empty() {
-            return Err("AGENT_HYPERVISOR_TYPE must not be empty".to_string());
         }
         if self.version.trim().is_empty() {
             return Err("AGENT_VERSION must not be empty".to_string());

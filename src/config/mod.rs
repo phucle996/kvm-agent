@@ -1,7 +1,6 @@
 pub mod agent;
 pub mod app;
 pub mod grpc;
-pub mod runtime;
 pub mod worker;
 
 use std::env;
@@ -12,7 +11,6 @@ use anyhow::{anyhow, Context, Result};
 use crate::config::agent::AgentConfig;
 use crate::config::app::{AppEnvironment, AppSection};
 use crate::config::grpc::GrpcConfig;
-use crate::config::runtime::RuntimeConfig;
 use crate::config::worker::WorkerConfig;
 
 #[derive(Clone, Debug)]
@@ -53,7 +51,6 @@ pub struct AppConfig {
     pub app: AppSection,
     pub agent: AgentConfig,
     pub grpc: GrpcConfig,
-    pub runtime: RuntimeConfig,
     pub worker: WorkerConfig,
     pub log: LogConfig,
 }
@@ -101,18 +98,10 @@ pub fn load_from_env() -> Result<AppConfig> {
                     "invalid AGENT_HEARTBEAT_INTERVAL_SEC, expected unsigned integer seconds",
                 )?,
         ),
-        hypervisor_type: optional_env("AGENT_HYPERVISOR_TYPE").unwrap_or_else(|| "kvm".to_string()),
         version: optional_env("AGENT_VERSION")
             .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string()),
     };
     agent.validate().map_err(|e| anyhow!(e))?;
-
-    let runtime = RuntimeConfig {
-        driver: optional_env("RUNTIME_DRIVER").unwrap_or_else(|| "kvm".to_string()),
-        redis_url: optional_env("REDIS_URL")
-            .unwrap_or_else(|| "redis://127.0.0.1:6379/0".to_string()),
-    };
-    runtime.validate().map_err(|e| anyhow!(e))?;
 
     let worker = WorkerConfig {
         max_workers: optional_env("WORKER_MAX")
@@ -135,7 +124,6 @@ pub fn load_from_env() -> Result<AppConfig> {
         app,
         agent,
         grpc,
-        runtime,
         worker,
         log,
     })

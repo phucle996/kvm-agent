@@ -8,6 +8,7 @@ ConditionPathExists=/usr/local/bin/aurora-kvm-agent
 Type=simple
 User=aurora-kvm-agent
 Group=aurora
+SupplementaryGroups=kvm libvirt
 EnvironmentFile=/etc/aurora-kvm-agent/.env
 WorkingDirectory=/var/lib/aurora-kvm-agent
 ExecStart=/usr/local/bin/aurora-kvm-agent

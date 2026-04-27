@@ -18,7 +18,6 @@ BINARY_URL_AMD64=""
 BINARY_URL_ARM64=""
 VERSION="latest"
 GRPC_BIND_ADDR="0.0.0.0:8081"
-RUNTIME_DRIVER="kvm"
 DRY_RUN="false"
 GITHUB_REPO="phucle996/kvm-agent"
 
@@ -34,7 +33,6 @@ Options:
   --binary-url-arm64 <value>  Optional release tarball URL for linux-arm64
   --version <value>           Agent version label persisted to .env
   --grpc-bind <value>         Local gRPC bind address for health checks
-  --runtime-driver <value>    Runtime driver value persisted to .env
   --dry-run                   Validate inputs and print planned actions without installing
   -h, --help                  Show this help text
 EOF
@@ -45,6 +43,87 @@ require_cmd() {
     echo "Missing required command: $1" >&2
     exit 1
   }
+}
+
+current_login_user() {
+  if [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER}" != "root" ]; then
+    echo "$SUDO_USER"
+    return
+  fi
+  id -un
+}
+
+install_kvm_dependencies() {
+  echo "[kvm] Installing KVM/libvirt dependencies..."
+  if command -v apt-get >/dev/null 2>&1; then
+    sudo apt-get update
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+      qemu-kvm \
+      libvirt-daemon-system \
+      libvirt-clients \
+      bridge-utils \
+      virtinst
+  elif command -v dnf >/dev/null 2>&1; then
+    sudo dnf install -y \
+      qemu-kvm \
+      libvirt \
+      libvirt-client \
+      bridge-utils \
+      virt-install
+  elif command -v yum >/dev/null 2>&1; then
+    sudo yum install -y \
+      qemu-kvm \
+      libvirt \
+      libvirt-client \
+      bridge-utils \
+      virt-install
+  else
+    echo "Unsupported package manager. Install qemu-kvm and libvirt manually before continuing." >&2
+    exit 1
+  fi
+}
+
+enable_libvirt_service() {
+  echo "[kvm] Enabling libvirt service..."
+  if systemctl list-unit-files | grep -q '^libvirtd\.service'; then
+    sudo systemctl enable --now libvirtd.service
+  elif systemctl list-unit-files | grep -q '^virtqemud\.service'; then
+    sudo systemctl enable --now virtqemud.service
+  else
+    echo "Cannot find libvirtd.service or virtqemud.service after installation." >&2
+    exit 1
+  fi
+}
+
+ensure_group_exists() {
+  local group="$1"
+  if ! getent group "$group" >/dev/null 2>&1; then
+    sudo groupadd --system "$group"
+  fi
+}
+
+add_user_to_group_if_exists() {
+  local user="$1"
+  local group="$2"
+  if id "$user" >/dev/null 2>&1 && getent group "$group" >/dev/null 2>&1; then
+    sudo usermod -aG "$group" "$user"
+  fi
+}
+
+configure_kvm_access() {
+  local runner_user="$1"
+  echo "[kvm] Configuring KVM/libvirt access for ${runner_user} and ${SERVICE_USER}..."
+  ensure_group_exists kvm
+  ensure_group_exists libvirt
+  add_user_to_group_if_exists "$runner_user" kvm
+  add_user_to_group_if_exists "$runner_user" libvirt
+  add_user_to_group_if_exists "$SERVICE_USER" kvm
+  add_user_to_group_if_exists "$SERVICE_USER" libvirt
+
+  if [ -e /dev/kvm ]; then
+    sudo chgrp kvm /dev/kvm || true
+    sudo chmod 660 /dev/kvm || true
+  fi
 }
 
 set_env_value() {
@@ -97,6 +176,7 @@ ConditionPathExists=/usr/local/bin/aurora-kvm-agent
 Type=simple
 User=aurora-kvm-agent
 Group=aurora
+SupplementaryGroups=kvm libvirt
 EnvironmentFile=/etc/aurora-kvm-agent/.env
 WorkingDirectory=/var/lib/aurora-kvm-agent
 ExecStart=/usr/local/bin/aurora-kvm-agent
@@ -137,10 +217,6 @@ while [ $# -gt 0 ]; do
       ;;
     --grpc-bind)
       GRPC_BIND_ADDR="${2:-}"
-      shift 2
-      ;;
-    --runtime-driver)
-      RUNTIME_DRIVER="${2:-}"
       shift 2
       ;;
     --dry-run)
@@ -188,18 +264,22 @@ Dry run:
   server:            ${SERVER}
   binary_url:        ${SELECTED_BINARY_URL}
   grpc_bind_addr:    ${GRPC_BIND_ADDR}
-  runtime_driver:    ${RUNTIME_DRIVER}
   config_dir:        ${CONFIG_DIR}
   systemd_unit:      ${SYSTEMD_UNIT}
 EOF
   exit 0
 fi
 
+RUNNER_USER="$(current_login_user)"
+
 require_cmd curl
 require_cmd tar
 require_cmd install
 require_cmd systemctl
 require_cmd base32
+
+install_kvm_dependencies
+enable_libvirt_service
 
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "${TMP_DIR}"' EXIT
@@ -221,6 +301,7 @@ fi
 if ! id "$SERVICE_USER" >/dev/null 2>&1; then
   sudo useradd -r -s /usr/sbin/nologin -g "$SERVICE_GROUP" "$SERVICE_USER"
 fi
+configure_kvm_access "$RUNNER_USER"
 sudo mkdir -p "$CONFIG_DIR" "$TLS_DIR" "$STATE_DIR" "$LOG_DIR"
 sudo chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "$CONFIG_DIR" "$STATE_DIR" "$LOG_DIR"
 sudo chmod 750 "$CONFIG_DIR" "$STATE_DIR" "$LOG_DIR"
@@ -249,11 +330,8 @@ set_env_value "$TMP_ENV" "AGENT_CERT_PATH" "${TLS_DIR}/client.crt"
 set_env_value "$TMP_ENV" "AGENT_KEY_PATH" "${TLS_DIR}/client.key"
 set_env_value "$TMP_ENV" "AGENT_BOOTSTRAP_TOKEN" "$TOKEN"
 set_env_value "$TMP_ENV" "AGENT_HEARTBEAT_INTERVAL_SEC" "10"
-set_env_value "$TMP_ENV" "AGENT_HYPERVISOR_TYPE" "kvm"
 set_env_value "$TMP_ENV" "AGENT_VERSION" "$VERSION"
-set_env_value "$TMP_ENV" "RUNTIME_DRIVER" "$RUNTIME_DRIVER"
 set_env_value "$TMP_ENV" "WORKER_MAX" "4"
-set_env_value "$TMP_ENV" "REDIS_URL" "redis://127.0.0.1:6379/0"
 sudo cp "$TMP_ENV" "$ENV_FILE"
 rm -f "$TMP_ENV"
 sudo chmod 640 "$ENV_FILE"
@@ -280,4 +358,7 @@ Installed ${SERVICE_NAME}
   systemd:     ${SYSTEMD_UNIT}
   target:      ${SERVER}
   version:     ${VERSION}
+
+Note: user ${RUNNER_USER} was added to kvm/libvirt groups when available.
+      Log out and back in for group membership to apply to interactive shells.
 EOF

@@ -27,7 +27,7 @@ pub fn collect_host_facts(config: &AppConfig) -> HostFacts {
         host_id: node_id,
         hostname,
         private_ip,
-        hypervisor_type: config.agent.hypervisor_type.clone(),
+        hypervisor_type: "kvm".to_string(),
         agent_version: config.agent.version.clone(),
         capabilities_json,
         cpu_cores,

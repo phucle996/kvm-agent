@@ -513,7 +513,7 @@ async fn execute_agent_command(command_type: &str, payload_json: &str) -> Result
     Ok(json!({
         "command_type": command_type,
         "payload": payload,
-        "runtime_driver": "libvirt",
+        "runtime_driver": "kvm",
         "accepted": true
     })
     .to_string())
