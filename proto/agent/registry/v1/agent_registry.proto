@@ -1,0 +1,161 @@
+syntax = "proto3";
+
+package agent.registry.v1;
+
+option go_package = "hypervisor/internal/transport/grpc/agentregistryv1;agentregistryv1";
+
+import "google/protobuf/timestamp.proto";
+
+service AgentRegistry {
+  rpc BootstrapEnrollAgent(BootstrapEnrollAgentRequest) returns (BootstrapEnrollAgentResponse);
+  rpc AgentControlStream(stream AgentToHypervisor) returns (stream HypervisorToAgent);
+}
+
+message BootstrapEnrollAgentRequest {
+  string bootstrap_token = 1;
+  string requested_agent_id = 2;
+  string csr_pem = 3;
+  string hostname = 4;
+}
+
+message BootstrapEnrollAgentResponse {
+  string agent_id = 1;
+  string client_cert_pem = 2;
+  string ca_cert_pem = 3;
+  google.protobuf.Timestamp cert_not_after = 4;
+}
+
+message RegisterHost {
+  string agent_id = 1;
+  string host_id = 2;
+  string hostname = 3;
+  string private_ip = 4;
+  string hypervisor_type = 5;
+  string agent_version = 6;
+  string capabilities_json = 7;
+  int32 cpu_cores = 8;
+  int64 memory_bytes = 9;
+  int64 disk_bytes = 10;
+}
+
+message AgentHeartbeat {
+  string agent_id = 1;
+  string host_id = 2;
+  string status = 3;
+  google.protobuf.Timestamp last_seen_at = 4;
+}
+
+message AgentCommand {
+  string command_id = 1;
+  string idempotency_key = 2;
+  string type = 3;
+  string payload_json = 4;
+}
+
+message RegisterAck {
+  string host_id = 1;
+  string status = 2;
+  string node_id = 3;
+}
+
+message HeartbeatAck {
+  string host_id = 1;
+  string status = 2;
+}
+
+message StoragePoolInventory {
+  string name = 1;
+  string driver = 2;
+  string path = 3;
+  int64 total_bytes = 4;
+  int64 used_bytes = 5;
+  string status = 6;
+  string metadata_json = 7;
+}
+
+message NetworkInterfaceInventory {
+  string name = 1;
+  string mac_address = 2;
+  string ipv4_address = 3;
+  string ipv6_address = 4;
+  int32 speed_mbps = 5;
+  string status = 6;
+  string metadata_json = 7;
+}
+
+message HostInventory {
+  string agent_id = 1;
+  string host_id = 2;
+  repeated StoragePoolInventory storage_pools = 3;
+  repeated NetworkInterfaceInventory network_interfaces = 4;
+  google.protobuf.Timestamp collected_at = 5;
+}
+
+message NodeMetricSample {
+  string agent_id = 1;
+  string host_id = 2;
+  double cpu_used_percent = 3;
+  double ram_used_gib = 4;
+  double ssd_used_gib = 5;
+  int64 network_rx_bps = 6;
+  int64 network_tx_bps = 7;
+  double load_avg_1m = 8;
+  double load_avg_5m = 9;
+  double load_avg_15m = 10;
+  google.protobuf.Timestamp sampled_at = 11;
+}
+
+message VPSMetricSample {
+  string agent_id = 1;
+  string host_id = 2;
+  string vps_id = 3;
+  double cpu_used_percent = 4;
+  double ram_used_gib = 5;
+  double ssd_used_gib = 6;
+  int64 network_rx_bps = 7;
+  int64 network_tx_bps = 8;
+  double disk_iops_read = 9;
+  double disk_iops_write = 10;
+  google.protobuf.Timestamp sampled_at = 11;
+}
+
+message AgentCommandResult {
+  string agent_id = 1;
+  string host_id = 2;
+  string command_id = 3;
+  string status = 4;
+  string result_json = 5;
+  string error_message = 6;
+  google.protobuf.Timestamp completed_at = 7;
+}
+
+message AgentEvent {
+  string agent_id = 1;
+  string host_id = 2;
+  string severity = 3;
+  string message = 4;
+  string metadata_json = 5;
+  google.protobuf.Timestamp occurred_at = 6;
+}
+
+message AgentToHypervisor {
+  string stream_id = 1;
+  uint64 seq = 2;
+  oneof message {
+    RegisterHost register_host = 10;
+    AgentHeartbeat heartbeat = 11;
+    HostInventory host_inventory = 12;
+    NodeMetricSample node_metric = 13;
+    VPSMetricSample vps_metric = 14;
+    AgentCommandResult command_result = 15;
+    AgentEvent event = 16;
+  }
+}
+
+message HypervisorToAgent {
+  oneof message {
+    RegisterAck register_ack = 1;
+    HeartbeatAck heartbeat_ack = 2;
+    AgentCommand command = 3;
+  }
+}

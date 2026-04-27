@@ -1,0 +1,14 @@
+[app]
+name = "vm-agent"
+env = "dev"
+node_id = "vm-node-dev"
+
+[grpc]
+bind_addr = "127.0.0.1:50051"
+
+[runtime]
+driver = "qemu"
+reconcile_interval_sec = 3
+
+[worker]
+max_workers = 8

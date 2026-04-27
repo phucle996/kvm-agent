@@ -1,0 +1,23 @@
+[Unit]
+Description=Aurora KVM Agent
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/usr/local/bin/aurora-kvm-agent
+
+[Service]
+Type=simple
+User=aurora-kvm-agent
+Group=aurora
+EnvironmentFile=/etc/aurora-kvm-agent/.env
+WorkingDirectory=/var/lib/aurora-kvm-agent
+ExecStart=/usr/local/bin/aurora-kvm-agent
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=yes
+ReadWritePaths=/var/lib/aurora-kvm-agent /etc/aurora-kvm-agent
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,14 @@
+[app]
+name = "vm-agent"
+env = "prod"
+node_id = "vm-node-prod"
+
+[grpc]
+bind_addr = "0.0.0.0:50051"
+
+[runtime]
+driver = "libvirt"
+reconcile_interval_sec = 5
+
+[worker]
+max_workers = 64

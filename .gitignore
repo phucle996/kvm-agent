@@ -1,0 +1,77 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.local
+*.secret
+*.secrets
+
+# TLS/cert/key material
+*.pem
+*.key
+*.crt
+*.csr
+*.p12
+*.pfx
+*.jks
+/configs/**/*.pem
+/configs/**/*.key
+/configs/**/*.crt
+/package/**/*.pem
+/package/**/*.key
+/package/**/*.crt
+
+# Runtime state, logs, temp files
+/state/
+/logs/
+/tmp/
+*.log
+*.pid
+*.sock
+*.tmp
+*.temp
+.cache/
+
+# Release/package outputs
+/dist/
+/release/
+/artifacts/
+*.tar.gz
+*.tgz
+*.zip
+*.deb
+*.rpm
+*.apk
+*.checksum
+*.sha256
+
+# Generated protobuf outputs if produced locally
+/gen/
+/generated/
+/proto/**/*.pb.rs
+
+# IDE/editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Coverage and profiling
+/coverage/
+*.profraw
+*.profdata
+*.lcov
+coverage.out
+
+# Local install/test outputs
+/bin/
+/aurora-kvm-agent
+/vm-agent

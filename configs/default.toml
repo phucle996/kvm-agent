@@ -1,0 +1,14 @@
+[app]
+name = "vm-agent"
+env = "default"
+node_id = "vm-node-default"
+
+[grpc]
+bind_addr = "0.0.0.0:50051"
+
+[runtime]
+driver = "qemu"
+reconcile_interval_sec = 5
+
+[worker]
+max_workers = 16
