@@ -130,10 +130,9 @@ provision_ca_cert() {
     return
   fi
 
-  # 3. Not found — warn; agent will retry until CA is placed manually
-  echo "[ca] WARNING: no CA certificate found. The agent will fail enrollment until" >&2
-  echo "[ca]          you place the Hypervisor CA at: ${dest}" >&2
-  echo "[ca]          Re-run with: --ca /path/to/hypervisor-ca.crt" >&2
+  # 3. Not found — info; agent will use insecure TLS for automatic bootstrap
+  echo "[ca] INFO: No CA certificate found. Agent will start in 'Automatic Bootstrap' mode"
+  echo "[ca]       using Insecure TLS to enroll with the Hypervisor."
 }
 
 install_kvm_dependencies() {
@@ -415,6 +414,8 @@ sudo chmod 750 "$CONFIG_DIR" "$STATE_DIR" "$LOG_DIR"
 provision_ca_cert
 
 echo "[4/7] Installing binary..."
+# Stop service if running to avoid "file busy" errors during overwrite
+sudo systemctl stop "${SERVICE_NAME}.service" >/dev/null 2>&1 || true
 sudo install -m 755 "${TMP_DIR}/${SERVICE_NAME}" "$INSTALL_BIN"
 
 echo "[5/7] Writing environment file..."
