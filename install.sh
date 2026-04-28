@@ -57,26 +57,33 @@ install_kvm_dependencies() {
   echo "[kvm] Installing KVM/libvirt dependencies..."
   if command -v apt-get >/dev/null 2>&1; then
     sudo apt-get update || echo "[kvm] Warning: apt-get update failed; continuing with existing package indexes." >&2
-    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-      qemu-kvm \
-      libvirt-daemon-system \
-      libvirt-clients \
-      bridge-utils \
-      virtinst
+    local apt_packages=(qemu-kvm libvirt-daemon-system libvirt-clients bridge-utils virtinst)
+    if ! sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "${apt_packages[@]}"; then
+      echo "[kvm] Warning: apt-get install failed; retrying packages individually." >&2
+      echo "[kvm] Warning: your APT state may be broken. Example fix: sudo apt-get install --reinstall redisinsight or sudo apt-get remove redisinsight" >&2
+      local pkg
+      for pkg in "${apt_packages[@]}"; do
+        if dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "install ok installed"; then
+          continue
+        fi
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "$pkg" || \
+          echo "[kvm] Warning: failed to install ${pkg}; continuing." >&2
+      done
+    fi
   elif command -v dnf >/dev/null 2>&1; then
     sudo dnf install -y \
       qemu-kvm \
       libvirt \
       libvirt-client \
       bridge-utils \
-      virt-install
+      virt-install || echo "[kvm] Warning: dnf dependency install failed; continuing." >&2
   elif command -v yum >/dev/null 2>&1; then
     sudo yum install -y \
       qemu-kvm \
       libvirt \
       libvirt-client \
       bridge-utils \
-      virt-install
+      virt-install || echo "[kvm] Warning: yum dependency install failed; continuing." >&2
   else
     echo "Unsupported package manager. Install qemu-kvm and libvirt manually before continuing." >&2
     exit 1
