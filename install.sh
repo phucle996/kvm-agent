@@ -15,6 +15,7 @@ SYSTEMD_UNIT="/etc/systemd/system/${SERVICE_NAME}.service"
 SERVER=""
 TOKEN=""
 SERVER_NAME=""
+CA_CERT_SRC=""
 BINARY_URL_AMD64=""
 BINARY_URL_ARM64=""
 VERSION="latest"
@@ -28,14 +29,15 @@ Usage:
   install.sh --server <grpc-endpoint> --token <bootstrap-token> [options]
 
 Options:
-  --server <value>            Hypervisor gRPC endpoint, for example https://hypervisor.example.com:9443
+  --server <value>            Hypervisor gRPC endpoint, e.g. hypervisor.example.com:9443
   --token <value>             One-time bootstrap token created by Hypervisor
-  --server-name <value>       TLS server name override (SNI); auto-derived from --server if omitted
-  --binary-url <value>        Override release tarball URL for linux-amd64 (auto-resolved from --version by default)
+  --ca <path>                 Path to the Hypervisor CA certificate (PEM); auto-detected if omitted
+  --server-name <value>       TLS SNI override; auto-derived from --server if omitted
+  --binary-url <value>        Override release tarball URL for linux-amd64
   --binary-url-arm64 <value>  Optional release tarball URL for linux-arm64
   --version <value>           Agent version label persisted to .env
-  --grpc-bind <value>         Local gRPC bind address for health checks
-  --dry-run                   Validate inputs and print planned actions without installing
+  --grpc-bind <value>         Local gRPC bind address for health checks (default: 0.0.0.0:8081)
+  --dry-run                   Print planned actions without installing
   -h, --help                  Show this help text
 EOF
 }
@@ -84,6 +86,54 @@ ensure_dns_resolution() {
   fi
   echo "127.0.0.1 ${hostname}" | sudo tee -a /etc/hosts >/dev/null
   echo "[dns] Added: 127.0.0.1 ${hostname}"
+}
+
+# Well-known paths where a local Hypervisor installation stores its CA
+HYPERVISOR_CA_SEARCH_PATHS=(
+  "/etc/aurora-hypervisor/tls/app/ca/ca.crt"
+  "/etc/aurora-hypervisor/tls/ca/ca.crt"
+  "/etc/aurora-hypervisor/ca.crt"
+)
+
+# Copy the Hypervisor CA certificate into $TLS_DIR/ca.crt with correct ownership.
+# Priority: --ca flag > auto-detected local hypervisor CA > skip with warning.
+provision_ca_cert() {
+  local dest="${TLS_DIR}/ca.crt"
+
+  # 1. Explicit path supplied via --ca
+  if [ -n "$CA_CERT_SRC" ]; then
+    if [ ! -f "$CA_CERT_SRC" ]; then
+      echo "[ca] ERROR: --ca file not found: ${CA_CERT_SRC}" >&2
+      exit 1
+    fi
+    echo "[ca] Installing CA from ${CA_CERT_SRC}"
+    sudo cp "$CA_CERT_SRC" "$dest"
+    sudo chown "${SERVICE_USER}:${SERVICE_GROUP}" "$dest"
+    sudo chmod 640 "$dest"
+    return
+  fi
+
+  # 2. Auto-detect from local Hypervisor installation
+  local found=""
+  for path in "${HYPERVISOR_CA_SEARCH_PATHS[@]}"; do
+    if [ -f "$path" ]; then
+      found="$path"
+      break
+    fi
+  done
+
+  if [ -n "$found" ]; then
+    echo "[ca] Auto-detected Hypervisor CA at ${found}"
+    sudo cp "$found" "$dest"
+    sudo chown "${SERVICE_USER}:${SERVICE_GROUP}" "$dest"
+    sudo chmod 640 "$dest"
+    return
+  fi
+
+  # 3. Not found — warn; agent will retry until CA is placed manually
+  echo "[ca] WARNING: no CA certificate found. The agent will fail enrollment until" >&2
+  echo "[ca]          you place the Hypervisor CA at: ${dest}" >&2
+  echo "[ca]          Re-run with: --ca /path/to/hypervisor-ca.crt" >&2
 }
 
 install_kvm_dependencies() {
@@ -245,6 +295,10 @@ while [ $# -gt 0 ]; do
       TOKEN="${2:-}"
       shift 2
       ;;
+    --ca)
+      CA_CERT_SRC="${2:-}"
+      shift 2
+      ;;
     --server-name)
       SERVER_NAME="${2:-}"
       shift 2
@@ -314,6 +368,7 @@ Dry run:
   arch:              ${ARCH}
   server:            ${SERVER}
   server_name:       ${SERVER_NAME}
+  ca_cert_src:       ${CA_CERT_SRC:-auto-detect}
   binary_url:        ${SELECTED_BINARY_URL}
   grpc_bind_addr:    ${GRPC_BIND_ADDR}
   config_dir:        ${CONFIG_DIR}
@@ -357,6 +412,7 @@ configure_kvm_access "$RUNNER_USER"
 sudo mkdir -p "$CONFIG_DIR" "$TLS_DIR" "$STATE_DIR" "$LOG_DIR"
 sudo chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "$CONFIG_DIR" "$STATE_DIR" "$LOG_DIR"
 sudo chmod 750 "$CONFIG_DIR" "$STATE_DIR" "$LOG_DIR"
+provision_ca_cert
 
 echo "[4/7] Installing binary..."
 sudo install -m 755 "${TMP_DIR}/${SERVICE_NAME}" "$INSTALL_BIN"
