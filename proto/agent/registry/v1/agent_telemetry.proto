@@ -1,0 +1,74 @@
+syntax = "proto3";
+
+package agent.registry.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "hypervisor/internal/transport/grpc/agentregistryv1";
+
+message StoragePoolInventory {
+  string name = 1;
+  string driver = 2;
+  string path = 3;
+  int64 total_bytes = 4;
+  int64 used_bytes = 5;
+  string status = 6;
+  string metadata_json = 7;
+}
+
+message NetworkInterfaceInventory {
+  string name = 1;
+  string mac_address = 2;
+  string ipv4_address = 3;
+  string ipv6_address = 4;
+  int32 speed_mbps = 5;
+  string status = 6;
+  string metadata_json = 7;
+}
+
+message HostInventory {
+  string agent_id = 1;
+  string host_id = 2;
+  repeated StoragePoolInventory storage_pools = 3;
+  repeated NetworkInterfaceInventory network_interfaces = 4;
+  google.protobuf.Timestamp collected_at = 5;
+}
+
+message NodeMetricSample {
+  string agent_id = 1;
+  string host_id = 2;
+  double cpu_used_percent = 3;
+  double cpu_used_cores = 4;
+  double ram_used_gib = 5;
+  double ram_used_percent = 6;
+  double ssd_used_gib = 7;
+  double ssd_used_percent = 8;
+  double gpu_used_percent = 9;
+  double gpu_used_gib = 10;
+  int64 network_rx_bps = 11;
+  int64 network_tx_bps = 12;
+  uint64 disk_read_bps = 13;
+  uint64 disk_write_bps = 14;
+  google.protobuf.Timestamp sampled_at = 15;
+}
+
+message VPSMetricSample {
+  string agent_id = 1;
+  string host_id = 2;
+  string vps_id = 3;
+  double cpu_used_percent = 4;
+  double cpu_used_cores = 5;
+  double ram_used_gib = 6;
+  double ram_used_percent = 7;
+  double ssd_used_gib = 8;
+  double ssd_used_percent = 9;
+  double gpu_used_percent = 10;
+  double gpu_used_gib = 11;
+  int64 network_rx_bps = 12;
+  int64 network_tx_bps = 13;
+  uint64 disk_read_bps = 14;
+  uint64 disk_write_bps = 15;
+  double disk_iops_read = 16;
+  double disk_iops_write = 17;
+  google.protobuf.Timestamp sampled_at = 18;
+}

@@ -388,13 +388,26 @@ install_kvm_dependencies
 enable_libvirt_service
 
 TMP_DIR="$(mktemp -d)"
+# Ensure sudo/root can read files in this directory
+chmod 755 "${TMP_DIR}"
 trap 'rm -rf "${TMP_DIR}"' EXIT
 
-echo "[1/7] Downloading ${SERVICE_NAME} release artifact for ${ARCH}..."
-curl -fsSL "$SELECTED_BINARY_URL" -o "${TMP_DIR}/agent.tar.gz"
-
-echo "[2/7] Extracting artifact..."
-tar -xzf "${TMP_DIR}/agent.tar.gz" -C "$TMP_DIR"
+echo "[1/7] Checking for ${SERVICE_NAME} binary..."
+# Check for local binary first (useful for local development)
+LOCAL_BIN_PATH="./target/release/${SERVICE_NAME}"
+if [ -f "$LOCAL_BIN_PATH" ]; then
+  echo "[1/7] Found local binary at ${LOCAL_BIN_PATH}, skipping download."
+  cp "$LOCAL_BIN_PATH" "${TMP_DIR}/${SERVICE_NAME}"
+else
+  echo "[1/7] Downloading ${SERVICE_NAME} release artifact for ${ARCH}..."
+  if ! curl -fsSL "$SELECTED_BINARY_URL" -o "${TMP_DIR}/agent.tar.gz"; then
+    echo "ERROR: Failed to download binary from ${SELECTED_BINARY_URL}" >&2
+    echo "Hint: If you are developing locally, run 'cargo build --release' first." >&2
+    exit 1
+  fi
+  echo "[2/7] Extracting artifact..."
+  tar -xzf "${TMP_DIR}/agent.tar.gz" -C "$TMP_DIR"
+fi
 if [ ! -f "${TMP_DIR}/${SERVICE_NAME}" ]; then
   echo "Artifact does not contain ${SERVICE_NAME}" >&2
   exit 1

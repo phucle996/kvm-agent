@@ -122,7 +122,7 @@ impl IdentityStore {
         }
     }
 
-    pub fn clear_enrollment(&self) {
+    pub fn clear_identity(&self) {
         let _ = fs::remove_file(&self.cert_path);
         let _ = fs::remove_file(&self.ca_path);
     }

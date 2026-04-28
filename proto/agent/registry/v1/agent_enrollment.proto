@@ -1,0 +1,47 @@
+syntax = "proto3";
+
+package agent.registry.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "hypervisor/internal/transport/grpc/agentregistryv1";
+
+message BootstrapEnrollAgentRequest {
+  string bootstrap_token = 1;
+  string requested_agent_id = 2;
+  string csr_pem = 3;
+  string hostname = 4;
+}
+
+message BootstrapEnrollAgentResponse {
+  string agent_id = 1;
+  string client_cert_pem = 2;
+  string ca_cert_pem = 3;
+  google.protobuf.Timestamp cert_not_after = 4;
+}
+
+message RegisterHost {
+  string agent_id = 1;
+  string host_id = 2;
+  string hostname = 3;
+  string private_ip = 4;
+  string hypervisor_type = 5;
+  string agent_version = 6;
+  string capabilities_json = 7;
+  int32 cpu_cores = 8;
+  int32 cpu_threads = 9;
+  int64 memory_bytes = 10;
+  int64 disk_bytes = 11;
+  int32 gpu_cores = 12;
+  int64 gpu_memory_bytes = 13;
+  string cpu_model = 14;
+  string ram_model = 15;
+  string disk_model = 16;
+  string gpu_model = 17;
+}
+
+message RegisterAck {
+  string host_id = 1;
+  string status = 2;
+  string node_id = 3;
+}

@@ -28,6 +28,7 @@ Usage:
 
 Options:
   --purge      Also delete the service user and group
+  --yes, -y    Skip confirmation prompt
   --dry-run    Print actions without executing them
   -h, --help   Show this help text
 EOF
@@ -36,6 +37,7 @@ EOF
 while [ $# -gt 0 ]; do
   case "$1" in
     --purge)   PURGE="true";   shift ;;
+    --yes|-y)  CONFIRM="true"; shift ;;
     --dry-run) DRY_RUN="true"; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage; exit 1 ;;
@@ -85,7 +87,7 @@ cat <<EOF
 
 EOF
 
-if [ "$DRY_RUN" = "false" ]; then
+if [ "$DRY_RUN" = "false" ] && [ "${CONFIRM:-false}" = "false" ]; then
   read -r -p "Proceed with uninstallation? [y/N] " confirm
   case "$confirm" in
     [yY][eE][sS]|[yY]) ;;

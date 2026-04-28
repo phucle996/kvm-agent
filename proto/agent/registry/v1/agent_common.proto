@@ -1,0 +1,36 @@
+syntax = "proto3";
+
+package agent.registry.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "hypervisor/internal/transport/grpc/agentregistryv1";
+
+message AgentHeartbeat {
+  string agent_id = 1;
+  string host_id = 2;
+  string status = 3;
+  google.protobuf.Timestamp last_seen_at = 4;
+}
+
+message HeartbeatAck {
+  string host_id = 1;
+  string status = 2;
+}
+
+message AgentCommand {
+  string command_id = 1;
+  string idempotency_key = 2;
+  string type = 3;
+  string payload_json = 4;
+}
+
+message AgentCommandResult {
+  string agent_id = 1;
+  string host_id = 2;
+  string command_id = 3;
+  string status = 4;
+  string result_json = 5;
+  string error_message = 6;
+  google.protobuf.Timestamp completed_at = 7;
+}

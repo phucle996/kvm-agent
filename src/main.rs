@@ -7,6 +7,11 @@ use vm_agent::telemetry::logging::{app_span, init};
 
 #[tokio::main]
 async fn main() {
+    // Install the default crypto provider for rustls 0.23+
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .ok();
+
     if std::env::args().nth(1).as_deref() == Some("--print-node-id") {
         println!("{}", ulid::Ulid::new());
         return;
