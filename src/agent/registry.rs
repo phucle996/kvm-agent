@@ -390,35 +390,57 @@ async fn build_channel(
     config: &AppConfig,
     identity: Option<&AgentIdentityState>,
 ) -> Result<Channel> {
-    let endpoint = Endpoint::from_shared(normalize_endpoint(&config.agent.target_addr))
-        .context("build hypervisor endpoint")?;
+    let mut target = normalize_endpoint(&config.agent.target_addr);
+    let mut use_tls = target.starts_with("https://");
 
-    let mut tls = ClientTlsConfig::new();
-    let server_name = server_name(config);
-    tls = tls.domain_name(server_name);
-
-    let ca_pem = match identity {
-        Some(state) if !state.ca_bundle_pem.is_empty() => state.ca_bundle_pem.clone(),
-        _ => std::fs::read(&config.agent.ca_path)
-            .with_context(|| format!("read ca bundle {}", config.agent.ca_path))?,
-    };
-    tls = tls.ca_certificate(Certificate::from_pem(ca_pem));
-
-    if let Some(state) = identity {
-        if !state.client_cert_pem.is_empty() && !state.client_key_pem.is_empty() {
-            tls = tls.identity(Identity::from_pem(
-                state.client_cert_pem.clone(),
-                state.client_key_pem.clone(),
-            ));
+    // During bootstrap, if we don't have a CA on disk, fallback to insecure connection
+    if identity.is_none() && use_tls {
+        if std::fs::metadata(&config.agent.ca_path).is_err() {
+            tracing::warn!(
+                component = "agent",
+                operation = "build_channel",
+                "no CA certificate found for bootstrap, falling back to insecure connection"
+            );
+            target = target.replace("https://", "http://");
+            use_tls = false;
         }
     }
 
-    endpoint
-        .tls_config(tls)
-        .context("configure hypervisor tls")?
-        .connect()
-        .await
-        .context("connect to hypervisor")
+    let endpoint = Endpoint::from_shared(target).context("build hypervisor endpoint")?;
+
+    if use_tls {
+        let mut tls = ClientTlsConfig::new();
+        let server_name = server_name(config);
+        tls = tls.domain_name(server_name);
+
+        let ca_pem = match identity {
+            Some(state) if !state.ca_bundle_pem.is_empty() => state.ca_bundle_pem.clone(),
+            _ => std::fs::read(&config.agent.ca_path)
+                .with_context(|| format!("read ca bundle {}", config.agent.ca_path))?,
+        };
+        tls = tls.ca_certificate(Certificate::from_pem(ca_pem));
+
+        if let Some(state) = identity {
+            if !state.client_cert_pem.is_empty() && !state.client_key_pem.is_empty() {
+                tls = tls.identity(Identity::from_pem(
+                    state.client_cert_pem.clone(),
+                    state.client_key_pem.clone(),
+                ));
+            }
+        }
+
+        endpoint
+            .tls_config(tls)
+            .context("configure hypervisor tls")?
+            .connect()
+            .await
+            .context("connect to hypervisor")
+    } else {
+        endpoint
+            .connect()
+            .await
+            .context("connect to hypervisor insecure")
+    }
 }
 
 async fn run_telemetry_loop(

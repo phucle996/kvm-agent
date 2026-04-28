@@ -14,6 +14,7 @@ SYSTEMD_UNIT="/etc/systemd/system/${SERVICE_NAME}.service"
 
 SERVER=""
 TOKEN=""
+SERVER_NAME=""
 BINARY_URL_AMD64=""
 BINARY_URL_ARM64=""
 VERSION="latest"
@@ -29,6 +30,7 @@ Usage:
 Options:
   --server <value>            Hypervisor gRPC endpoint, for example https://hypervisor.example.com:9443
   --token <value>             One-time bootstrap token created by Hypervisor
+  --server-name <value>       TLS server name override (SNI); auto-derived from --server if omitted
   --binary-url <value>        Override release tarball URL for linux-amd64 (auto-resolved from --version by default)
   --binary-url-arm64 <value>  Optional release tarball URL for linux-arm64
   --version <value>           Agent version label persisted to .env
@@ -51,6 +53,37 @@ current_login_user() {
     return
   fi
   id -un
+}
+
+# Extract hostname from a grpc endpoint (strips scheme and port)
+auto_resolve_server_name() {
+  local addr="$1"
+  # Strip scheme
+  addr="${addr#https://}"
+  addr="${addr#http://}"
+  # Strip path
+  addr="${addr%%/*}"
+  # Strip port
+  echo "${addr%:*}"
+}
+
+# Ensure the given hostname resolves; if not, add 127.0.0.1 mapping to /etc/hosts
+ensure_dns_resolution() {
+  local hostname="$1"
+  if [ -z "$hostname" ]; then
+    return
+  fi
+  # Already resolves (getent covers /etc/hosts + DNS)
+  if getent hosts "$hostname" >/dev/null 2>&1; then
+    return
+  fi
+  echo "[dns] '$hostname' does not resolve; adding 127.0.0.1 entry to /etc/hosts"
+  if grep -qF "$hostname" /etc/hosts 2>/dev/null; then
+    echo "[dns] Entry already present in /etc/hosts (possibly stale); skipping."
+    return
+  fi
+  echo "127.0.0.1 ${hostname}" | sudo tee -a /etc/hosts >/dev/null
+  echo "[dns] Added: 127.0.0.1 ${hostname}"
 }
 
 install_kvm_dependencies() {
@@ -212,6 +245,10 @@ while [ $# -gt 0 ]; do
       TOKEN="${2:-}"
       shift 2
       ;;
+    --server-name)
+      SERVER_NAME="${2:-}"
+      shift 2
+      ;;
     --binary-url)
       BINARY_URL_AMD64="${2:-}"
       shift 2
@@ -263,6 +300,11 @@ if [ "$ARCH" = "arm64" ] && [ -n "$BINARY_URL_ARM64" ]; then
   SELECTED_BINARY_URL="$BINARY_URL_ARM64"
 fi
 
+# Auto-derive server name (TLS SNI) from the server address if not explicitly set
+if [ -z "$SERVER_NAME" ]; then
+  SERVER_NAME="$(auto_resolve_server_name "$SERVER")"
+fi
+
 # VERSION already defaults to "latest" if not set
 
 if [ "$DRY_RUN" = "true" ]; then
@@ -271,6 +313,7 @@ Dry run:
   service_name:      ${SERVICE_NAME}
   arch:              ${ARCH}
   server:            ${SERVER}
+  server_name:       ${SERVER_NAME}
   binary_url:        ${SELECTED_BINARY_URL}
   grpc_bind_addr:    ${GRPC_BIND_ADDR}
   config_dir:        ${CONFIG_DIR}
@@ -333,7 +376,7 @@ set_env_value "$TMP_ENV" "APP_NODE_ID" "$NODE_ID"
 set_env_value "$TMP_ENV" "SHUTDOWN_TIMEOUT_SEC" "15"
 set_env_value "$TMP_ENV" "GRPC_BIND_ADDR" "$GRPC_BIND_ADDR"
 set_env_value "$TMP_ENV" "AGENT_TARGET_ADDR" "$SERVER"
-set_env_value "$TMP_ENV" "AGENT_SERVER_NAME" ""
+set_env_value "$TMP_ENV" "AGENT_SERVER_NAME" "$SERVER_NAME"
 set_env_value "$TMP_ENV" "AGENT_CA_PATH" "${TLS_DIR}/ca.crt"
 set_env_value "$TMP_ENV" "AGENT_CERT_PATH" "${TLS_DIR}/client.crt"
 set_env_value "$TMP_ENV" "AGENT_KEY_PATH" "${TLS_DIR}/client.key"
@@ -354,6 +397,7 @@ rm -f "$TMP_UNIT"
 sudo chmod 644 "$SYSTEMD_UNIT"
 
 echo "[7/7] Enabling and restarting ${SERVICE_NAME}..."
+ensure_dns_resolution "$SERVER_NAME"
 sudo systemctl daemon-reload
 sudo systemctl enable "${SERVICE_NAME}.service"
 sudo systemctl restart "${SERVICE_NAME}.service"
