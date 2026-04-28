@@ -1,0 +1,5 @@
+[build.env]
+passthrough = [
+    "AWS_LC_SYS_NO_ASM",
+    "AWS_LC_SYS_IGNORE_COMPILER_CHECK"
+]
