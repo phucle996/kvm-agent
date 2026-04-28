@@ -390,20 +390,46 @@ async fn build_channel(
     config: &AppConfig,
     identity: Option<&AgentIdentityState>,
 ) -> Result<Channel> {
-    let mut target = normalize_endpoint(&config.agent.target_addr);
-    let mut use_tls = target.starts_with("https://");
+    let target = normalize_endpoint(&config.agent.target_addr);
+    let use_tls = target.starts_with("https://");
 
-    // During bootstrap, if we don't have a CA on disk, fallback to insecure connection
-    if identity.is_none() && use_tls {
-        if std::fs::metadata(&config.agent.ca_path).is_err() {
-            tracing::warn!(
-                component = "agent",
-                operation = "build_channel",
-                "no CA certificate found for bootstrap, falling back to insecure connection"
-            );
-            target = target.replace("https://", "http://");
-            use_tls = false;
-        }
+    // During bootstrap, if we don't have a CA on disk, fallback to insecure TLS
+    if identity.is_none() && use_tls && std::fs::metadata(&config.agent.ca_path).is_err() {
+        tracing::warn!(
+            component = "agent",
+            operation = "build_channel",
+            "no CA certificate found for bootstrap, using insecure TLS (skip verification)"
+        );
+
+        let mut root_store = rustls::RootCertStore::empty();
+        root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+
+        let mut config = rustls::ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+
+        config
+            .dangerous()
+            .set_certificate_verifier(Arc::new(NoCertificateVerification));
+
+        return Ok(Endpoint::from_shared(target)?
+            .connect_with_connector(tower::service_fn(move |uri: http::Uri| {
+                let host = uri.host().unwrap_or("localhost").to_string();
+                let port = uri.port_u16().unwrap_or(443);
+                let addr = format!("{}:{}", host, port);
+                let config = config.clone();
+
+                async move {
+                    let stream = tokio::net::TcpStream::connect(addr).await?;
+                    let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
+                    let domain = rustls::pki_types::ServerName::try_from(host)
+                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?
+                        .to_owned();
+                    let tls_stream = connector.connect(domain, stream).await?;
+                    Ok::<_, std::io::Error>(hyper_util::rt::tokio::TokioIo::new(tls_stream))
+                }
+            }))
+            .await?);
     }
 
     let endpoint = Endpoint::from_shared(target).context("build hypervisor endpoint")?;
@@ -429,17 +455,9 @@ async fn build_channel(
             }
         }
 
-        endpoint
-            .tls_config(tls)
-            .context("configure hypervisor tls")?
-            .connect()
-            .await
-            .context("connect to hypervisor")
+        Ok(endpoint.tls_config(tls)?.connect().await?)
     } else {
-        endpoint
-            .connect()
-            .await
-            .context("connect to hypervisor insecure")
+        Ok(endpoint.connect().await?)
     }
 }
 
@@ -630,5 +648,47 @@ fn system_time_to_timestamp(time: SystemTime) -> prost_types::Timestamp {
     prost_types::Timestamp {
         seconds: duration.as_secs() as i64,
         nanos: duration.subsec_nanos() as i32,
+    }
+}
+
+#[derive(Debug)]
+struct NoCertificateVerification;
+
+impl rustls::client::danger::ServerCertVerifier for NoCertificateVerification {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        vec![
+            rustls::SignatureScheme::RSA_PSS_SHA256,
+            rustls::SignatureScheme::RSA_PKCS1_SHA256,
+            rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
+        ]
     }
 }
