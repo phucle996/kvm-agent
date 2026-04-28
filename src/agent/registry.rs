@@ -401,18 +401,24 @@ async fn build_channel(
             "no CA certificate found for bootstrap, using insecure TLS (skip verification)"
         );
 
+        rustls::crypto::ring::default_provider()
+            .install_default()
+            .ok();
+
         let mut root_store = rustls::RootCertStore::empty();
         root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
 
         let mut config = rustls::ClientConfig::builder()
             .with_root_certificates(root_store)
             .with_no_client_auth();
-
+        
+        config.alpn_protocols = vec![b"h2".to_vec()];
         config
             .dangerous()
             .set_certificate_verifier(Arc::new(NoCertificateVerification));
 
-        return Ok(Endpoint::from_shared(target)?
+        let target_insecure = target.replace("https://", "http://");
+        return Ok(Endpoint::from_shared(target_insecure)?
             .connect_with_connector(tower::service_fn(move |uri: http::Uri| {
                 let host = uri.host().unwrap_or("localhost").to_string();
                 let port = uri.port_u16().unwrap_or(443);
@@ -420,12 +426,20 @@ async fn build_channel(
                 let config = config.clone();
 
                 async move {
-                    let stream = tokio::net::TcpStream::connect(addr).await?;
+                    tracing::info!(%addr, "connecting to hypervisor");
+                    let stream = tokio::net::TcpStream::connect(&addr).await
+                        .map_err(|e| { tracing::error!(%e, "tcp connect failed"); e })?;
+                    
+                    tracing::info!("performing tls handshake");
                     let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
-                    let domain = rustls::pki_types::ServerName::try_from(host)
-                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?
+                    let domain = rustls::pki_types::ServerName::try_from(host.clone())
+                        .map_err(|e| { tracing::error!(%e, "invalid server name"); std::io::Error::new(std::io::ErrorKind::InvalidInput, e) })?
                         .to_owned();
-                    let tls_stream = connector.connect(domain, stream).await?;
+                    
+                    let tls_stream = connector.connect(domain, stream).await
+                        .map_err(|e| { tracing::error!(%e, "tls handshake failed"); e })?;
+                    
+                    tracing::info!("tls handshake successful, wrapping in tokioio");
                     Ok::<_, std::io::Error>(hyper_util::rt::tokio::TokioIo::new(tls_stream))
                 }
             }))
@@ -685,10 +699,8 @@ impl rustls::client::danger::ServerCertVerifier for NoCertificateVerification {
     }
 
     fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        vec![
-            rustls::SignatureScheme::RSA_PSS_SHA256,
-            rustls::SignatureScheme::RSA_PKCS1_SHA256,
-            rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
-        ]
+        rustls::crypto::ring::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
     }
 }

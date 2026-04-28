@@ -21,7 +21,7 @@ serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 tokio-stream = "0.1"
-tonic = { version = "0.12", features = ["transport", "tls-native-roots"] }
+tonic = { version = "0.12", features = ["transport", "tls", "tls-native-roots"] }
 rustls = { version = "0.23", features = ["ring"] }
 tokio-rustls = "0.26"
 webpki-roots = "0.26"
