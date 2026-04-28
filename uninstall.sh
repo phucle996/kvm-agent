@@ -129,7 +129,17 @@ else
   step "Binary ${INSTALL_BIN} not found, skipping."
 fi
 
-# ─── 4. remove config & TLS directory ────────────────────────────────────────
+# ─── 4. remove dns entry from /etc/hosts ─────────────────────────────────────
+# We try to find if there's a 127.0.0.1 entry with the server_name from the .env
+if [ -f "${CONFIG_DIR}/.env" ]; then
+  SERVER_NAME_VAL="$(grep '^AGENT_SERVER_NAME=' "${CONFIG_DIR}/.env" | cut -d'=' -f2- | tr -d '"' || true)"
+  if [ -n "$SERVER_NAME_VAL" ] && [ "$SERVER_NAME_VAL" != "localhost" ]; then
+    step "Removing '${SERVER_NAME_VAL}' from /etc/hosts (if present)..."
+    sudo_run sed -i "/127.0.0.1 ${SERVER_NAME_VAL}/d" /etc/hosts
+  fi
+fi
+
+# ─── 5. remove config & TLS directory ────────────────────────────────────────
 
 step "Removing config directory (includes TLS certs)..."
 if [ -d "$CONFIG_DIR" ]; then
