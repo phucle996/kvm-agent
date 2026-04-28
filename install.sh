@@ -56,7 +56,7 @@ current_login_user() {
 install_kvm_dependencies() {
   echo "[kvm] Installing KVM/libvirt dependencies..."
   if command -v apt-get >/dev/null 2>&1; then
-    sudo apt-get update
+    sudo apt-get update || echo "[kvm] Warning: apt-get update failed; continuing with existing package indexes." >&2
     sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
       qemu-kvm \
       libvirt-daemon-system \
