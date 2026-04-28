@@ -91,9 +91,9 @@ install_kvm_dependencies() {
 
 enable_libvirt_service() {
   echo "[kvm] Enabling libvirt service..."
-  if systemctl list-unit-files | grep -q '^libvirtd\.service'; then
+  if systemctl list-unit-files libvirtd.service >/dev/null 2>&1 || [ -f /lib/systemd/system/libvirtd.service ] || [ -f /usr/lib/systemd/system/libvirtd.service ]; then
     sudo systemctl enable --now libvirtd.service
-  elif systemctl list-unit-files | grep -q '^virtqemud\.service'; then
+  elif systemctl list-unit-files virtqemud.service >/dev/null 2>&1 || [ -f /lib/systemd/system/virtqemud.service ] || [ -f /usr/lib/systemd/system/virtqemud.service ]; then
     sudo systemctl enable --now virtqemud.service
   else
     echo "[kvm] Error: cannot find libvirtd.service or virtqemud.service after dependency installation." >&2
