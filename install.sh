@@ -66,8 +66,7 @@ install_kvm_dependencies() {
         if dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "install ok installed"; then
           continue
         fi
-        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "$pkg" || \
-          echo "[kvm] Warning: failed to install ${pkg}; continuing." >&2
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "$pkg" || true
       done
     fi
   elif command -v dnf >/dev/null 2>&1; then
@@ -76,14 +75,14 @@ install_kvm_dependencies() {
       libvirt \
       libvirt-client \
       bridge-utils \
-      virt-install || echo "[kvm] Warning: dnf dependency install failed; continuing." >&2
+      virt-install
   elif command -v yum >/dev/null 2>&1; then
     sudo yum install -y \
       qemu-kvm \
       libvirt \
       libvirt-client \
       bridge-utils \
-      virt-install || echo "[kvm] Warning: yum dependency install failed; continuing." >&2
+      virt-install
   else
     echo "Unsupported package manager. Install qemu-kvm and libvirt manually before continuing." >&2
     exit 1
@@ -97,7 +96,10 @@ enable_libvirt_service() {
   elif systemctl list-unit-files | grep -q '^virtqemud\.service'; then
     sudo systemctl enable --now virtqemud.service
   else
-    echo "Cannot find libvirtd.service or virtqemud.service after installation." >&2
+    echo "[kvm] Error: cannot find libvirtd.service or virtqemud.service after dependency installation." >&2
+    echo "[kvm] Fix package manager/libvirt first, then rerun installer. On Ubuntu/Debian try:" >&2
+    echo "[kvm]   sudo apt-get install --reinstall libvirt-daemon-system libvirt-clients qemu-kvm" >&2
+    echo "[kvm] If APT is blocked by a broken package, fix/remove that package first." >&2
     exit 1
   fi
 }
