@@ -190,7 +190,10 @@ fn discover_disk_model() -> String {
         for entry in entries.flatten() {
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
-            if name_str.starts_with("sd") || name_str.starts_with("nvme") || name_str.starts_with("vd") {
+            if name_str.starts_with("sd")
+                || name_str.starts_with("nvme")
+                || name_str.starts_with("vd")
+            {
                 let model_path = format!("/sys/block/{}/device/model", name_str);
                 if let Ok(model) = fs::read_to_string(model_path) {
                     let trimmed = model.trim();
@@ -220,7 +223,10 @@ fn discover_gpu_model() -> String {
     if let Ok(output) = Command::new("lspci").output() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         for line in stdout.lines() {
-            if line.contains("VGA compatible controller") || line.contains("NVIDIA") || line.contains("AMD") {
+            if line.contains("VGA compatible controller")
+                || line.contains("NVIDIA")
+                || line.contains("AMD")
+            {
                 if let Some(pos) = line.find(':') {
                     let model = line[pos + 1..].trim();
                     if !model.is_empty() {
@@ -232,7 +238,6 @@ fn discover_gpu_model() -> String {
     }
     "Internal Graphics".to_string()
 }
-
 
 fn discover_disk_bytes() -> Option<i64> {
     let output = Command::new("df").args(["-B1", "/"]).output().ok()?;
@@ -314,59 +319,71 @@ fn get_ip_for_interface(name: &str, ipv6: bool) -> String {
 pub fn discover_storage_pools() -> Vec<StoragePool> {
     let mut pools = Vec::new();
     let contents = fs::read_to_string("/proc/mounts").unwrap_or_default();
-    
+
     for line in contents.lines() {
         let fields: Vec<&str> = line.split_whitespace().collect();
-        if fields.len() < 3 { continue; }
+        if fields.len() < 3 {
+            continue;
+        }
         let device = fields[0];
         let path = fields[1];
         let fs_type = fields[2];
 
         // Filter for physical partitions that are commonly used for storage
-        if (device.starts_with("/dev/sd") || device.starts_with("/dev/nvme") || device.starts_with("/dev/vd") || device.starts_with("/dev/mapper/"))
-           && (fs_type == "ext4" || fs_type == "xfs" || fs_type == "btrfs") {
-            
-            let name = if path == "/" { 
-                "root".to_string() 
-            } else { 
-                path.trim_start_matches('/').replace('/', "-") 
+        if (device.starts_with("/dev/sd")
+            || device.starts_with("/dev/nvme")
+            || device.starts_with("/dev/vd")
+            || device.starts_with("/dev/mapper/"))
+            && (fs_type == "ext4" || fs_type == "xfs" || fs_type == "btrfs")
+        {
+            let name = if path == "/" {
+                "root".to_string()
+            } else {
+                path.trim_start_matches('/').replace('/', "-")
             };
-            
+
             if let Ok(output) = Command::new("df").args(["-B1", path]).output() {
                 if output.status.success() {
                     let stdout = String::from_utf8_lossy(&output.stdout);
                     let mut lines = stdout.lines();
                     lines.next(); // skip header
                     if let Some(df_line) = lines.next() {
-                         let df_fields: Vec<&str> = df_line.split_whitespace().collect();
-                         // Handle cases where output might be wrapped
-                         let (total_idx, used_idx) = if df_fields.len() >= 3 {
-                             (1, 2)
-                         } else if let Some(wrapped_line) = lines.next() {
-                             let wrapped_fields: Vec<&str> = wrapped_line.split_whitespace().collect();
-                             if wrapped_fields.len() >= 2 {
-                                 (0, 1) // In wrapped case, the next line starts with numbers
-                             } else {
-                                 continue;
-                             }
-                         } else {
-                             continue;
-                         };
+                        let df_fields: Vec<&str> = df_line.split_whitespace().collect();
+                        // Handle cases where output might be wrapped
+                        let (total_idx, used_idx) = if df_fields.len() >= 3 {
+                            (1, 2)
+                        } else if let Some(wrapped_line) = lines.next() {
+                            let wrapped_fields: Vec<&str> =
+                                wrapped_line.split_whitespace().collect();
+                            if wrapped_fields.len() >= 2 {
+                                (0, 1) // In wrapped case, the next line starts with numbers
+                            } else {
+                                continue;
+                            }
+                        } else {
+                            continue;
+                        };
 
-                         let total = df_fields.get(total_idx).and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
-                         let used = df_fields.get(used_idx).and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
-                         
-                         if total > 0 {
-                             pools.push(StoragePool {
-                                 name,
-                                 driver: "dir".to_string(),
-                                 path: path.to_string(),
-                                 total_bytes: total,
-                                 used_bytes: used,
-                                 status: "active".to_string(),
-                                 metadata_json: json!({ "device": device }).to_string(),
-                             });
-                         }
+                        let total = df_fields
+                            .get(total_idx)
+                            .and_then(|v| v.parse::<i64>().ok())
+                            .unwrap_or(0);
+                        let used = df_fields
+                            .get(used_idx)
+                            .and_then(|v| v.parse::<i64>().ok())
+                            .unwrap_or(0);
+
+                        if total > 0 {
+                            pools.push(StoragePool {
+                                name,
+                                driver: "dir".to_string(),
+                                path: path.to_string(),
+                                total_bytes: total,
+                                used_bytes: used,
+                                status: "active".to_string(),
+                                metadata_json: json!({ "device": device }).to_string(),
+                            });
+                        }
                     }
                 }
             }

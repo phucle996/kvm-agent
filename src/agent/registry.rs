@@ -1,22 +1,24 @@
-use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{anyhow, Result};
+use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tonic::Request;
 
 use crate::config::AppConfig;
 use crate::model::host::{HostFacts, HostRegistration};
-use crate::service::host::collect_host_facts;
 use crate::repository::vm::IdentityStore;
+use crate::service::host::collect_host_facts;
 use crate::transport::grpc::pb::agent_registry_v1::agent_registry_client::AgentRegistryClient;
 
-use crate::agent::bootstrap::{ensure_identity, build_channel, is_fatal_bootstrap_error, is_auth_failure};
-use crate::agent::registration::handle_server_message;
-use crate::agent::telemetry::run_telemetry_loop;
+use crate::agent::bootstrap::{
+    build_channel, ensure_identity, is_auth_failure, is_fatal_bootstrap_error,
+};
 use crate::agent::frames::register_frame;
 use crate::agent::heartbeat;
+use crate::agent::registration::handle_server_message;
+use crate::agent::telemetry::run_telemetry_loop;
 
 pub async fn connect_hypervisor(config: AppConfig, shutdown: CancellationToken) -> Result<()> {
     let store = IdentityStore::new(&config.agent);
@@ -80,9 +82,13 @@ async fn run_session(
     let stream_id = new_stream_id(&facts.agent_id);
     let seq = Arc::new(AtomicU64::new(1));
 
-    tx.send(register_frame(facts, &stream_id, seq.fetch_add(1, std::sync::atomic::Ordering::SeqCst)))
-        .await
-        .map_err(|e| anyhow!("failed to send initial register frame: {e}"))?;
+    tx.send(register_frame(
+        facts,
+        &stream_id,
+        seq.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
+    ))
+    .await
+    .map_err(|e| anyhow!("failed to send initial register frame: {e}"))?;
 
     let outbound_stream = tokio_stream::wrappers::ReceiverStream::new(rx);
     let mut response = client

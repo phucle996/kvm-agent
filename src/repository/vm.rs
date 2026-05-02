@@ -132,13 +132,18 @@ impl IdentityStore {
             fs::create_dir_all(parent)
                 .with_context(|| format!("create identity directory {}", parent.display()))?;
         }
-        fs::write(path, content).with_context(|| format!("write identity file {}", path.display()))?;
+        fs::write(path, content)
+            .with_context(|| format!("write identity file {}", path.display()))?;
 
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
 
-            let mode = if path == self.key_path.as_path() { 0o600 } else { 0o640 };
+            let mode = if path == self.key_path.as_path() {
+                0o600
+            } else {
+                0o640
+            };
             fs::set_permissions(path, fs::Permissions::from_mode(mode))
                 .with_context(|| format!("set identity file permissions {}", path.display()))?;
         }

@@ -26,7 +26,10 @@ pub async fn execute_agent_command(command_type: &str, payload_json: &str) -> Re
     let target = extract_target(&payload);
 
     if !SUPPORTED_COMMANDS.contains(&normalized.as_str()) {
-        return Err(anyhow!("agent command type '{}' is unsupported", normalized));
+        return Err(anyhow!(
+            "agent command type '{}' is unsupported",
+            normalized
+        ));
     }
 
     Err(anyhow!(
@@ -40,8 +43,7 @@ fn parse_payload(payload_json: &str) -> Result<Value> {
     if payload_json.trim().is_empty() {
         return Ok(json!({}));
     }
-    serde_json::from_str(payload_json)
-        .map_err(|err| anyhow!("invalid command payload json: {err}"))
+    serde_json::from_str(payload_json).map_err(|err| anyhow!("invalid command payload json: {err}"))
 }
 
 fn extract_target(payload: &Value) -> String {

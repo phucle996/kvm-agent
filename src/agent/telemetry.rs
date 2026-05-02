@@ -1,14 +1,14 @@
-use std::sync::Arc;
+use anyhow::{anyhow, Result};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tokio::sync::mpsc;
 use tokio::time::{interval, MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
-use anyhow::{anyhow, Result};
 
+use crate::agent::frames::{host_inventory_frame, node_metric_frame};
 use crate::model::host::HostFacts;
 use crate::transport::grpc::pb::agent_registry_v1::*;
-use crate::agent::frames::{host_inventory_frame, node_metric_frame};
 
 pub async fn run_telemetry_loop(
     tx: mpsc::Sender<AgentToHypervisor>,
@@ -22,7 +22,11 @@ pub async fn run_telemetry_loop(
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     if tx
-        .send(host_inventory_frame(&facts, &stream_id, seq.fetch_add(1, Ordering::SeqCst)))
+        .send(host_inventory_frame(
+            &facts,
+            &stream_id,
+            seq.fetch_add(1, Ordering::SeqCst),
+        ))
         .await
         .is_err()
     {
@@ -94,7 +98,10 @@ fn read_io_stats() -> Option<IOMetrics> {
             let parts: Vec<&str> = line.split_whitespace().collect();
             if parts.len() > 9 {
                 let dev_name = parts[2];
-                if dev_name.starts_with("sd") || dev_name.starts_with("nvme") || dev_name.starts_with("vd") {
+                if dev_name.starts_with("sd")
+                    || dev_name.starts_with("nvme")
+                    || dev_name.starts_with("vd")
+                {
                     disk_read += parts[5].parse::<u64>().unwrap_or(0) * 512;
                     disk_write += parts[9].parse::<u64>().unwrap_or(0) * 512;
                 }
@@ -118,18 +125,21 @@ struct CpuStats {
 
 fn read_cpu_stats() -> Result<CpuStats> {
     let contents = std::fs::read_to_string("/proc/stat")?;
-    let line = contents.lines().next().ok_or_else(|| anyhow!("empty /proc/stat"))?;
+    let line = contents
+        .lines()
+        .next()
+        .ok_or_else(|| anyhow!("empty /proc/stat"))?;
     let parts: Vec<&str> = line.split_whitespace().collect();
     if parts.len() < 5 {
         return Err(anyhow!("invalid /proc/stat format"));
     }
-    
+
     let mut total = 0u64;
     for part in parts.iter().skip(1) {
         total += part.parse::<u64>().unwrap_or(0);
     }
     let idle = parts[4].parse::<u64>().unwrap_or(0);
-    
+
     Ok(CpuStats { total, idle })
 }
 

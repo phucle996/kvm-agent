@@ -1,10 +1,10 @@
-use std::sync::Arc;
 use anyhow::{anyhow, Context, Result};
-use tonic::transport::{Channel, ClientTlsConfig, Certificate, Identity, Endpoint};
-use tonic::{Request, Status, Code};
+use std::sync::Arc;
+use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
+use tonic::{Code, Request, Status};
 
 use crate::config::AppConfig;
-use crate::model::host::{HostFacts, AgentIdentityState};
+use crate::model::host::{AgentIdentityState, HostFacts};
 use crate::repository::vm::IdentityStore;
 use crate::transport::grpc::pb::agent_registry_v1::agent_registry_client::AgentRegistryClient;
 use crate::transport::grpc::pb::agent_registry_v1::BootstrapEnrollAgentRequest;
@@ -95,7 +95,7 @@ pub async fn build_channel(
         let mut rustls_config = rustls::ClientConfig::builder()
             .with_root_certificates(root_store)
             .with_no_client_auth();
-        
+
         rustls_config.alpn_protocols = vec![b"h2".to_vec()];
         rustls_config
             .dangerous()
@@ -115,7 +115,7 @@ pub async fn build_channel(
                     let domain = rustls::pki_types::ServerName::try_from(host.clone())
                         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?
                         .to_owned();
-                    
+
                     let tls_stream = connector.connect(domain, stream).await?;
                     Ok::<_, std::io::Error>(hyper_util::rt::tokio::TokioIo::new(tls_stream))
                 }

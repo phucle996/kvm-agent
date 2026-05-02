@@ -1,8 +1,8 @@
-use std::time::SystemTime;
 use crate::model::host::HostFacts;
 use crate::service::host::usage_snapshot_gib;
 use crate::transport::grpc::pb::agent_registry_v1::*;
 use prost_types::Timestamp;
+use std::time::SystemTime;
 
 pub fn system_time_to_timestamp(t: SystemTime) -> Timestamp {
     let duration = t.duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
@@ -49,15 +49,23 @@ pub fn node_metric_frame(
     disk_write_bps: u64,
 ) -> AgentToHypervisor {
     let (ram_used_gib, ssd_used_gib) = usage_snapshot_gib();
-    
+
     let cpu_used_cores = (cpu_used_percent / 100.0) * (facts.cpu_cores as f64);
-    
+
     let total_ram_gib = facts.memory_bytes as f64 / 1024.0 / 1024.0 / 1024.0;
-    let ram_used_percent = if total_ram_gib > 0.0 { (ram_used_gib / total_ram_gib) * 100.0 } else { 0.0 };
-    
+    let ram_used_percent = if total_ram_gib > 0.0 {
+        (ram_used_gib / total_ram_gib) * 100.0
+    } else {
+        0.0
+    };
+
     let total_ssd_gib = facts.disk_bytes as f64 / 1024.0 / 1024.0 / 1024.0;
-    let ssd_used_percent = if total_ssd_gib > 0.0 { (ssd_used_gib / total_ssd_gib) * 100.0 } else { 0.0 };
-    
+    let ssd_used_percent = if total_ssd_gib > 0.0 {
+        (ssd_used_gib / total_ssd_gib) * 100.0
+    } else {
+        0.0
+    };
+
     AgentToHypervisor {
         stream_id: stream_id.to_string(),
         seq,
@@ -82,8 +90,10 @@ pub fn node_metric_frame(
 }
 
 pub fn host_inventory_frame(facts: &HostFacts, stream_id: &str, seq: u64) -> AgentToHypervisor {
-    let network_interfaces = facts.network_interfaces.iter().map(|iface| {
-        NetworkInterfaceInventory {
+    let network_interfaces = facts
+        .network_interfaces
+        .iter()
+        .map(|iface| NetworkInterfaceInventory {
             name: iface.name.clone(),
             mac_address: iface.mac_address.clone(),
             ipv4_address: iface.ipv4_address.clone(),
@@ -91,8 +101,8 @@ pub fn host_inventory_frame(facts: &HostFacts, stream_id: &str, seq: u64) -> Age
             speed_mbps: iface.speed_mbps,
             status: iface.status.clone(),
             metadata_json: "{}".to_string(),
-        }
-    }).collect();
+        })
+        .collect();
 
     AgentToHypervisor {
         stream_id: stream_id.to_string(),
@@ -100,8 +110,9 @@ pub fn host_inventory_frame(facts: &HostFacts, stream_id: &str, seq: u64) -> Age
         message: Some(agent_to_hypervisor::Message::HostInventory(HostInventory {
             agent_id: facts.agent_id.clone(),
             host_id: facts.host_id.clone(),
-            storage_pools: crate::service::host::discover_storage_pools().into_iter().map(|p| {
-                StoragePoolInventory {
+            storage_pools: crate::service::host::discover_storage_pools()
+                .into_iter()
+                .map(|p| StoragePoolInventory {
                     name: p.name,
                     driver: p.driver,
                     path: p.path,
@@ -109,8 +120,8 @@ pub fn host_inventory_frame(facts: &HostFacts, stream_id: &str, seq: u64) -> Age
                     used_bytes: p.used_bytes,
                     status: p.status,
                     metadata_json: p.metadata_json,
-                }
-            }).collect(),
+                })
+                .collect(),
             network_interfaces,
             collected_at: Some(system_time_to_timestamp(SystemTime::now())),
         })),

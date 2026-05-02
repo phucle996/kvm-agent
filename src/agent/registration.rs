@@ -1,12 +1,12 @@
-use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
-use std::time::SystemTime;
 use anyhow::{Context, Result};
+use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
+use std::time::SystemTime;
 use tokio::sync::mpsc;
 
+use crate::agent::command_handler::execute_agent_command;
 use crate::model::host::HostFacts;
 use crate::transport::grpc::pb::agent_registry_v1::*;
-use crate::agent::command_handler::execute_agent_command;
 
 pub async fn handle_server_message(
     frame: HypervisorToAgent,
@@ -61,7 +61,9 @@ pub async fn handle_server_message(
                         status,
                         result_json,
                         error_message,
-                        completed_at: Some(crate::agent::frames::system_time_to_timestamp(SystemTime::now())),
+                        completed_at: Some(crate::agent::frames::system_time_to_timestamp(
+                            SystemTime::now(),
+                        )),
                     },
                 )),
             })
