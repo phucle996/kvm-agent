@@ -69,23 +69,20 @@ auto_resolve_server_name() {
   echo "${addr%:*}"
 }
 
-# Ensure the given hostname resolves; if not, add 127.0.0.1 mapping to /etc/hosts
+# Ensure the given hostname resolves before starting the agent.
+# Do not rewrite /etc/hosts automatically because the controlplane endpoint is
+# typically remote and forcing 127.0.0.1 would break enrollment.
 ensure_dns_resolution() {
   local hostname="$1"
   if [ -z "$hostname" ]; then
     return
   fi
-  # Already resolves (getent covers /etc/hosts + DNS)
   if getent hosts "$hostname" >/dev/null 2>&1; then
     return
   fi
-  echo "[dns] '$hostname' does not resolve; adding 127.0.0.1 entry to /etc/hosts"
-  if grep -qF "$hostname" /etc/hosts 2>/dev/null; then
-    echo "[dns] Entry already present in /etc/hosts (possibly stale); skipping."
-    return
-  fi
-  echo "127.0.0.1 ${hostname}" | sudo tee -a /etc/hosts >/dev/null
-  echo "[dns] Added: 127.0.0.1 ${hostname}"
+  echo "[dns] ERROR: hostname '$hostname' does not resolve." >&2
+  echo "[dns] Fix DNS or provide a resolvable --server/--server-name before continuing." >&2
+  exit 1
 }
 
 # Well-known paths where a local Hypervisor installation stores its CA

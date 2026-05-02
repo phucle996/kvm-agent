@@ -83,11 +83,11 @@ pub fn load_from_env() -> Result<AppConfig> {
             .unwrap_or_else(|| "https://127.0.0.1:9443".to_string()),
         server_name: optional_env("AGENT_SERVER_NAME").unwrap_or_default(),
         ca_path: optional_env("AGENT_CA_PATH")
-            .unwrap_or_else(|| "/etc/vm-agent/tls/ca.crt".to_string()),
+            .unwrap_or_else(|| "/etc/aurora-kvm-agent/tls/ca.crt".to_string()),
         cert_path: optional_env("AGENT_CERT_PATH")
-            .unwrap_or_else(|| "/etc/vm-agent/tls/client.crt".to_string()),
+            .unwrap_or_else(|| "/etc/aurora-kvm-agent/tls/client.crt".to_string()),
         key_path: optional_env("AGENT_KEY_PATH")
-            .unwrap_or_else(|| "/etc/vm-agent/tls/client.key".to_string()),
+            .unwrap_or_else(|| "/etc/aurora-kvm-agent/tls/client.key".to_string()),
         bootstrap_token: optional_env("AGENT_BOOTSTRAP_TOKEN")
             .unwrap_or_else(|| "bootstrap".to_string()),
         heartbeat_interval: Duration::from_secs(
