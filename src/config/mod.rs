@@ -79,7 +79,9 @@ pub fn load_from_env() -> Result<AppConfig> {
 
     let agent = AgentConfig {
         enabled: true,
-        target_addr: optional_env("AGENT_TARGET_ADDR")
+        bootstrap_target_addr: optional_env("AGENT_BOOTSTRAP_TARGET_ADDR")
+            .unwrap_or_else(|| "https://127.0.0.1:9443".to_string()),
+        runtime_target_addr: optional_env("AGENT_RUNTIME_TARGET_ADDR")
             .unwrap_or_else(|| "https://127.0.0.1:9443".to_string()),
         server_name: optional_env("AGENT_SERVER_NAME").unwrap_or_default(),
         ca_path: optional_env("AGENT_CA_PATH")

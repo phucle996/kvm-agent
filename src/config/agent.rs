@@ -3,7 +3,8 @@ use std::time::Duration;
 #[derive(Clone, Debug)]
 pub struct AgentConfig {
     pub enabled: bool,
-    pub target_addr: String,
+    pub bootstrap_target_addr: String,
+    pub runtime_target_addr: String,
     pub server_name: String,
     pub ca_path: String,
     pub cert_path: String,
@@ -15,8 +16,11 @@ pub struct AgentConfig {
 
 impl AgentConfig {
     pub fn validate(&self) -> Result<(), String> {
-        if self.target_addr.trim().is_empty() {
-            return Err("AGENT_TARGET_ADDR must not be empty".to_string());
+        if self.bootstrap_target_addr.trim().is_empty() {
+            return Err("AGENT_BOOTSTRAP_TARGET_ADDR must not be empty".to_string());
+        }
+        if self.runtime_target_addr.trim().is_empty() {
+            return Err("AGENT_RUNTIME_TARGET_ADDR must not be empty".to_string());
         }
         if self.ca_path.trim().is_empty() {
             return Err("AGENT_CA_PATH must not be empty".to_string());

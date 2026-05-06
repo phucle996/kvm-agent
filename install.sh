@@ -13,6 +13,7 @@ LOG_DIR="/var/log/${SERVICE_NAME}"
 SYSTEMD_UNIT="/etc/systemd/system/${SERVICE_NAME}.service"
 
 SERVER=""
+RUNTIME_SERVER=""
 TOKEN=""
 SERVER_NAME=""
 CA_CERT_SRC=""
@@ -29,7 +30,8 @@ Usage:
   install.sh --server <grpc-endpoint> --token <bootstrap-token> [options]
 
 Options:
-  --server <value>            Hypervisor gRPC endpoint, e.g. hypervisor.example.com:9443
+  --server <value>            Controlplane bootstrap gRPC endpoint, e.g. hypervisor.example.com:9443
+  --runtime-server <value>    Dataplane runtime gRPC endpoint, e.g. http://dataplane-zone-default.example.com:50051
   --token <value>             One-time bootstrap token created by Hypervisor
   --ca <path>                 Path to the Hypervisor CA certificate (PEM); auto-detected if omitted
   --server-name <value>       TLS SNI override; auto-derived from --server if omitted
@@ -287,6 +289,10 @@ while [ $# -gt 0 ]; do
       SERVER="${2:-}"
       shift 2
       ;;
+    --runtime-server)
+      RUNTIME_SERVER="${2:-}"
+      shift 2
+      ;;
     --token)
       TOKEN="${2:-}"
       shift 2
@@ -350,7 +356,13 @@ if [ "$ARCH" = "arm64" ] && [ -n "$BINARY_URL_ARM64" ]; then
   SELECTED_BINARY_URL="$BINARY_URL_ARM64"
 fi
 
-# Auto-derive server name (TLS SNI) from the server address if not explicitly set
+if [ -z "$RUNTIME_SERVER" ]; then
+  RUNTIME_SERVER="$SERVER"
+  echo "[config] WARNING: --runtime-server not provided; defaulting runtime endpoint to --server." >&2
+  echo "[config] WARNING: For controlplane bootstrap + dataplane runtime split, set --runtime-server explicitly." >&2
+fi
+
+# Auto-derive server name (TLS SNI) from the bootstrap server address if not explicitly set
 if [ -z "$SERVER_NAME" ]; then
   SERVER_NAME="$(auto_resolve_server_name "$SERVER")"
 fi
@@ -363,6 +375,7 @@ Dry run:
   service_name:      ${SERVICE_NAME}
   arch:              ${ARCH}
   server:            ${SERVER}
+  runtime_server:    ${RUNTIME_SERVER}
   server_name:       ${SERVER_NAME}
   ca_cert_src:       ${CA_CERT_SRC:-auto-detect}
   binary_url:        ${SELECTED_BINARY_URL}
@@ -442,7 +455,8 @@ fi
 set_env_value "$TMP_ENV" "APP_NODE_ID" "$NODE_ID"
 set_env_value "$TMP_ENV" "SHUTDOWN_TIMEOUT_SEC" "15"
 set_env_value "$TMP_ENV" "GRPC_BIND_ADDR" "$GRPC_BIND_ADDR"
-set_env_value "$TMP_ENV" "AGENT_TARGET_ADDR" "$SERVER"
+set_env_value "$TMP_ENV" "AGENT_BOOTSTRAP_TARGET_ADDR" "$SERVER"
+set_env_value "$TMP_ENV" "AGENT_RUNTIME_TARGET_ADDR" "$RUNTIME_SERVER"
 set_env_value "$TMP_ENV" "AGENT_SERVER_NAME" "$SERVER_NAME"
 set_env_value "$TMP_ENV" "AGENT_CA_PATH" "${TLS_DIR}/ca.crt"
 set_env_value "$TMP_ENV" "AGENT_CERT_PATH" "${TLS_DIR}/client.crt"

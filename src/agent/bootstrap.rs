@@ -37,7 +37,8 @@ pub async fn bootstrap_enroll(
         .generate_csr(&private_key, &format!("vm-agent:{}", facts.agent_id))
         .context("generate bootstrap csr")?;
 
-    let channel = build_channel(config, None).await?;
+    let channel =
+        build_channel_for_target(config, &config.agent.bootstrap_target_addr, None).await?;
     let mut client = AgentRegistryClient::new(channel);
 
     let response = client
@@ -79,7 +80,15 @@ pub async fn build_channel(
     config: &AppConfig,
     identity: Option<&AgentIdentityState>,
 ) -> Result<Channel> {
-    let target = normalize_endpoint(&config.agent.target_addr);
+    build_channel_for_target(config, &config.agent.runtime_target_addr, identity).await
+}
+
+pub async fn build_channel_for_target(
+    config: &AppConfig,
+    target_addr: &str,
+    identity: Option<&AgentIdentityState>,
+) -> Result<Channel> {
+    let target = normalize_endpoint(target_addr);
     let use_tls = target.starts_with("https://");
 
     if identity.is_none() && use_tls && std::fs::metadata(&config.agent.ca_path).is_err() {
@@ -167,7 +176,7 @@ fn server_name(config: &AppConfig) -> String {
         return name.to_string();
     }
 
-    let raw = config.agent.target_addr.trim();
+    let raw = config.agent.runtime_target_addr.trim();
     let without_scheme = raw
         .strip_prefix("https://")
         .or_else(|| raw.strip_prefix("http://"))
