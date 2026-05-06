@@ -92,9 +92,11 @@ pub async fn build_channel_for_target(
     let use_tls = target.starts_with("https://");
 
     if identity.is_none() && use_tls && std::fs::metadata(&config.agent.ca_path).is_err() {
+        let connect_timeout = config.agent.connect_timeout;
         tracing::warn!(
             component = "agent",
             operation = "build_channel",
+            target = %target_addr,
             "no CA certificate found for bootstrap, using insecure TLS (skip verification)"
         );
 
@@ -112,6 +114,7 @@ pub async fn build_channel_for_target(
 
         let target_insecure = target.replace("https://", "http://");
         return Ok(Endpoint::from_shared(target_insecure)?
+            .connect_timeout(connect_timeout)
             .connect_with_connector(tower::service_fn(move |uri: http::Uri| {
                 let host = uri.host().unwrap_or("localhost").to_string();
                 let port = uri.port_u16().unwrap_or(443);
@@ -119,7 +122,12 @@ pub async fn build_channel_for_target(
                 let rustls_config = rustls_config.clone();
 
                 async move {
-                    let stream = tokio::net::TcpStream::connect(&addr).await?;
+                    let stream = tokio::time::timeout(
+                        connect_timeout,
+                        tokio::net::TcpStream::connect(&addr),
+                    )
+                    .await
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::TimedOut, e))??;
                     let connector = tokio_rustls::TlsConnector::from(Arc::new(rustls_config));
                     let domain = rustls::pki_types::ServerName::try_from(host.clone())
                         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?
@@ -132,11 +140,13 @@ pub async fn build_channel_for_target(
             .await?);
     }
 
-    let endpoint = Endpoint::from_shared(target).context("build hypervisor endpoint")?;
+    let endpoint = Endpoint::from_shared(target)
+        .context("build hypervisor endpoint")?
+        .connect_timeout(config.agent.connect_timeout);
 
     if use_tls {
         let mut tls = ClientTlsConfig::new();
-        let server_name = server_name(config);
+        let server_name = server_name_for_target(config, target_addr);
         tls = tls.domain_name(server_name);
 
         let ca_pem = match identity {
@@ -170,13 +180,13 @@ fn normalize_endpoint(raw: &str) -> String {
     }
 }
 
-fn server_name(config: &AppConfig) -> String {
+fn server_name_for_target(config: &AppConfig, target_addr: &str) -> String {
     let name = config.agent.server_name.trim();
     if !name.is_empty() {
         return name.to_string();
     }
 
-    let raw = config.agent.runtime_target_addr.trim();
+    let raw = target_addr.trim();
     let without_scheme = raw
         .strip_prefix("https://")
         .or_else(|| raw.strip_prefix("http://"))

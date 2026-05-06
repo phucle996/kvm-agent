@@ -83,6 +83,16 @@ pub fn load_from_env() -> Result<AppConfig> {
             .unwrap_or_else(|| "https://127.0.0.1:9443".to_string()),
         runtime_target_addr: optional_env("AGENT_RUNTIME_TARGET_ADDR")
             .unwrap_or_else(|| "https://127.0.0.1:9443".to_string()),
+        runtime_target_addrs: optional_env("AGENT_RUNTIME_TARGET_ADDRS")
+            .map(|value| {
+                value
+                    .split(',')
+                    .map(|item| item.trim())
+                    .filter(|item| !item.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default(),
         server_name: optional_env("AGENT_SERVER_NAME").unwrap_or_default(),
         ca_path: optional_env("AGENT_CA_PATH")
             .unwrap_or_else(|| "/etc/aurora-kvm-agent/tls/ca.crt".to_string()),
@@ -98,6 +108,30 @@ pub fn load_from_env() -> Result<AppConfig> {
                 .parse::<u64>()
                 .context(
                     "invalid AGENT_HEARTBEAT_INTERVAL_SEC, expected unsigned integer seconds",
+                )?,
+        ),
+        connect_timeout: Duration::from_secs(
+            optional_env("AGENT_CONNECT_TIMEOUT_SEC")
+                .unwrap_or_else(|| "3".to_string())
+                .parse::<u64>()
+                .context(
+                    "invalid AGENT_CONNECT_TIMEOUT_SEC, expected unsigned integer seconds",
+                )?,
+        ),
+        failover_base_backoff: Duration::from_millis(
+            optional_env("AGENT_FAILOVER_BASE_BACKOFF_MS")
+                .unwrap_or_else(|| "200".to_string())
+                .parse::<u64>()
+                .context(
+                    "invalid AGENT_FAILOVER_BASE_BACKOFF_MS, expected unsigned integer milliseconds",
+                )?,
+        ),
+        failover_max_backoff: Duration::from_millis(
+            optional_env("AGENT_FAILOVER_MAX_BACKOFF_MS")
+                .unwrap_or_else(|| "3000".to_string())
+                .parse::<u64>()
+                .context(
+                    "invalid AGENT_FAILOVER_MAX_BACKOFF_MS, expected unsigned integer milliseconds",
                 )?,
         ),
         version: optional_env("AGENT_VERSION")
