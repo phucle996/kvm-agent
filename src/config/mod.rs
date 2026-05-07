@@ -58,6 +58,7 @@ pub struct AppConfig {
 pub fn load_from_env() -> Result<AppConfig> {
     let app_name = optional_env("APP_NAME").unwrap_or_else(|| "aurora-kvm-agent".to_string());
     let node_id = required_env("APP_NODE_ID")?;
+    let zone_id = required_env("APP_ZONE_ID")?;
 
     let shutdown_timeout_secs = optional_env("SHUTDOWN_TIMEOUT_SEC")
         .unwrap_or_else(|| "15".to_string())
@@ -68,6 +69,7 @@ pub fn load_from_env() -> Result<AppConfig> {
         name: app_name.clone(),
         environment: AppEnvironment::Prod,
         node_id: node_id.clone(),
+        zone_id,
         shutdown_timeout: Duration::from_secs(shutdown_timeout_secs),
     };
     app.validate().map_err(|e| anyhow!(e))?;
@@ -81,18 +83,6 @@ pub fn load_from_env() -> Result<AppConfig> {
         enabled: true,
         bootstrap_target_addr: optional_env("AGENT_BOOTSTRAP_TARGET_ADDR")
             .unwrap_or_else(|| "https://127.0.0.1:9443".to_string()),
-        runtime_target_addr: optional_env("AGENT_RUNTIME_TARGET_ADDR")
-            .unwrap_or_else(|| "https://127.0.0.1:9443".to_string()),
-        runtime_target_addrs: optional_env("AGENT_RUNTIME_TARGET_ADDRS")
-            .map(|value| {
-                value
-                    .split(',')
-                    .map(|item| item.trim())
-                    .filter(|item| !item.is_empty())
-                    .map(str::to_string)
-                    .collect()
-            })
-            .unwrap_or_default(),
         server_name: optional_env("AGENT_SERVER_NAME").unwrap_or_default(),
         ca_path: optional_env("AGENT_CA_PATH")
             .unwrap_or_else(|| "/etc/aurora-kvm-agent/tls/ca.crt".to_string()),
@@ -108,6 +98,14 @@ pub fn load_from_env() -> Result<AppConfig> {
                 .parse::<u64>()
                 .context(
                     "invalid AGENT_HEARTBEAT_INTERVAL_SEC, expected unsigned integer seconds",
+                )?,
+        ),
+        telemetry_interval: Duration::from_secs(
+            optional_env("AGENT_TELEMETRY_INTERVAL_SEC")
+                .unwrap_or_else(|| "15".to_string())
+                .parse::<u64>()
+                .context(
+                    "invalid AGENT_TELEMETRY_INTERVAL_SEC, expected unsigned integer seconds",
                 )?,
         ),
         connect_timeout: Duration::from_secs(
@@ -136,6 +134,8 @@ pub fn load_from_env() -> Result<AppConfig> {
         ),
         version: optional_env("AGENT_VERSION")
             .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string()),
+        command_ledger_path: optional_env("AGENT_COMMAND_LEDGER_PATH")
+            .unwrap_or_else(|| "/var/lib/aurora-kvm-agent/command-ledger.db".to_string()),
     };
     agent.validate().map_err(|e| anyhow!(e))?;
 

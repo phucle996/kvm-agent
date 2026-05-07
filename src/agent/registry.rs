@@ -7,67 +7,115 @@ use tokio_util::sync::CancellationToken;
 use tonic::Request;
 
 use crate::config::AppConfig;
-use crate::model::host::{HostFacts, HostRegistration};
+use crate::model::host::{AgentIdentityState, HostFacts, HostRegistration};
 use crate::repository::vm::IdentityStore;
 use crate::service::host::collect_host_facts;
 use crate::transport::grpc::pb::agent_registry_v1::agent_registry_client::AgentRegistryClient;
+use crate::transport::grpc::pb::hypervisor_runtime_v1::runtime_assignment_service_client::RuntimeAssignmentServiceClient;
+use crate::transport::grpc::pb::hypervisor_runtime_v1::ResolveRuntimeAssignmentRequest;
+use crate::transport::grpc::pb::hypervisor_telemetry_v1::hypervisor_telemetry_service_client::HypervisorTelemetryServiceClient;
 
 use crate::agent::bootstrap::{
     build_channel_for_target, ensure_identity, is_auth_failure, is_fatal_bootstrap_error,
 };
+use crate::agent::command_ledger::CommandLedger;
 use crate::agent::frames::register_frame;
 use crate::agent::heartbeat;
 use crate::agent::registration::handle_server_message;
 use crate::agent::telemetry::run_telemetry_loop;
 
+#[derive(Clone, Debug)]
+struct AssignmentCache {
+    preferred_dp_id: String,
+    preferred_target: String,
+    candidates: Vec<String>,
+    assignment_epoch: i64,
+    refresh_after: Duration,
+    expires_at: SystemTime,
+}
+
 pub async fn connect_hypervisor(config: AppConfig, shutdown: CancellationToken) -> Result<()> {
     let store = IdentityStore::new(&config.agent);
+    let command_ledger = CommandLedger::open(&config.agent.command_ledger_path)?;
     let facts = collect_host_facts(&config);
-    let targets = config.agent.runtime_targets();
-    let mut selector = RuntimeTargetSelector::new(
-        targets,
-        config.agent.failover_base_backoff,
-        config.agent.failover_max_backoff,
-    );
+    let mut assignment_cache: Option<AssignmentCache> = None;
+    let mut backoff = config.agent.failover_base_backoff;
 
     loop {
         if shutdown.is_cancelled() {
             break;
         }
 
-        let target = selector
-            .current()
-            .ok_or_else(|| anyhow!("no runtime target configured"))?;
-        match run_session(&config, &store, &facts, target, shutdown.clone()).await {
-            Ok(_) => {
-                selector.reset_backoff();
-            }
-            Err(err) => {
-                if is_fatal_bootstrap_error(&err) {
-                    return Err(err);
+        let identity = ensure_identity(&config, &store, &facts).await?;
+        let assignment =
+            match resolve_assignment(&config, &identity, &facts, assignment_cache.as_ref()).await {
+                Ok(value) => value,
+                Err(err) => {
+                    if let Some(cache) = assignment_cache.as_ref() {
+                        if SystemTime::now() < cache.expires_at && !cache.candidates.is_empty() {
+                            cache.clone()
+                        } else {
+                            return Err(err);
+                        }
+                    } else {
+                        return Err(err);
+                    }
                 }
+            };
+        assignment_cache = Some(assignment.clone());
+        let mut selector = RuntimeTargetSelector::new(
+            assignment.candidates.clone(),
+            config.agent.failover_base_backoff,
+            config.agent.failover_max_backoff,
+        );
 
-                let is_auth = is_auth_failure(&err);
-                let retry_in = selector.failover_delay();
-                tracing::error!(
-                    component = "agent",
-                    operation = "session",
-                    status = "error",
-                    target = %target,
-                    error_message = %err,
-                    retry_in = ?retry_in,
-                    is_auth_failure = is_auth,
-                    "hypervisor session failed, rotating runtime target"
-                );
-
-                if is_auth {
-                    store.clear_identity();
+        while let Some(target) = selector.current() {
+            match run_session(
+                &config,
+                &store,
+                &facts,
+                &identity,
+                &assignment,
+                target,
+                &command_ledger,
+                shutdown.clone(),
+            )
+            .await
+            {
+                Ok(_) => {
+                    selector.reset_backoff();
+                    backoff = config.agent.failover_base_backoff;
+                    break;
                 }
-
-                selector.advance();
-                tokio::select! {
-                    _ = tokio::time::sleep(retry_in) => {},
-                    _ = shutdown.cancelled() => break,
+                Err(err) => {
+                    if is_fatal_bootstrap_error(&err) {
+                        return Err(err);
+                    }
+                    let is_auth = is_auth_failure(&err);
+                    let retry_in = selector.failover_delay().max(backoff);
+                    tracing::error!(
+                        component = "agent",
+                        operation = "session",
+                        status = "error",
+                        target = %target,
+                        error_message = %err,
+                        retry_in = ?retry_in,
+                        is_auth_failure = is_auth,
+                        "hypervisor session failed, rotating runtime target"
+                    );
+                    if is_auth {
+                        store.clear_identity();
+                    }
+                    selector.advance();
+                    if selector.current().is_none() {
+                        assignment_cache = None;
+                        backoff = (backoff * 2).min(config.agent.failover_max_backoff);
+                        break;
+                    }
+                    tokio::select! {
+                        _ = tokio::time::sleep(retry_in) => {},
+                        _ = shutdown.cancelled() => return Ok(()),
+                    }
                 }
             }
         }
@@ -80,11 +128,14 @@ async fn run_session(
     config: &AppConfig,
     store: &IdentityStore,
     facts: &HostFacts,
+    identity: &AgentIdentityState,
+    assignment: &AssignmentCache,
     runtime_target: &str,
+    command_ledger: &CommandLedger,
     shutdown: CancellationToken,
 ) -> Result<()> {
-    let identity = ensure_identity(config, store, facts).await?;
-    let channel = build_channel_for_target(config, runtime_target, Some(&identity)).await?;
+    let _ = store;
+    let channel = build_channel_for_target(config, runtime_target, Some(identity)).await?;
     let mut client = AgentRegistryClient::new(channel);
 
     let (tx, rx) = mpsc::channel(100);
@@ -123,22 +174,45 @@ async fn run_session(
         .await;
     });
 
+    let telemetry_channel =
+        build_channel_for_target(config, runtime_target, Some(identity)).await?;
+    let telemetry_client = HypervisorTelemetryServiceClient::new(telemetry_channel);
     let telemetry_shutdown = shutdown.clone();
-    let telemetry_tx = tx.clone();
     let telemetry_facts = facts.clone();
-    let telemetry_stream_id = stream_id.clone();
-    let telemetry_seq = seq.clone();
-    let telemetry_interval = config.agent.heartbeat_interval.max(Duration::from_secs(5));
+    let telemetry_zone = config.app.zone_id.clone();
+    let telemetry_interval = config.agent.telemetry_interval.max(Duration::from_secs(5));
     let telemetry_handle = tokio::spawn(async move {
         run_telemetry_loop(
-            telemetry_tx,
+            telemetry_client,
             telemetry_facts,
-            telemetry_stream_id,
-            telemetry_seq,
+            telemetry_zone,
             telemetry_shutdown,
             telemetry_interval,
         )
         .await;
+    });
+
+    let refresh_shutdown = shutdown.clone();
+    let refresh_config = config.clone();
+    let refresh_facts = facts.clone();
+    let refresh_identity = identity.clone();
+    let refresh_assignment = assignment.clone();
+    let refresh_target = runtime_target.to_string();
+    let (assignment_tx, mut assignment_rx) = mpsc::channel::<()>(1);
+    let refresh_handle = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = refresh_shutdown.cancelled() => return,
+                _ = tokio::time::sleep(refresh_assignment.refresh_after) => {
+                    if let Ok(updated) = resolve_assignment(&refresh_config, &refresh_identity, &refresh_facts, Some(&refresh_assignment)).await {
+                        if updated.preferred_target != refresh_target {
+                            let _ = assignment_tx.send(()).await;
+                            return;
+                        }
+                    }
+                }
+            }
+        }
     });
 
     tracing::info!(
@@ -146,6 +220,7 @@ async fn run_session(
         operation = "register_host",
         status = "started",
         target = %runtime_target,
+        preferred_dp_id = %assignment.preferred_dp_id,
         agent_id = %facts.agent_id,
         host_id = %facts.host_id,
         stream_id = %stream_id,
@@ -164,12 +239,21 @@ async fn run_session(
                 );
                 break;
             }
+            changed = assignment_rx.recv() => {
+                if changed.is_some() {
+                    heartbeat_handle.abort();
+                    telemetry_handle.abort();
+                    refresh_handle.abort();
+                    return Err(anyhow!("runtime assignment changed"));
+                }
+            }
             item = response.message() => {
                 match item {
                     Ok(Some(frame)) => {
-                        if let Err(err) = handle_server_message(frame, &tx, facts, &stream_id, &seq).await {
+                        if let Err(err) = handle_server_message(frame, &tx, facts, &stream_id, &seq, command_ledger).await {
                             heartbeat_handle.abort();
                             telemetry_handle.abort();
+                            refresh_handle.abort();
                             return Err(err);
                         }
                     }
@@ -186,6 +270,7 @@ async fn run_session(
                     Err(status) => {
                         heartbeat_handle.abort();
                         telemetry_handle.abort();
+                        refresh_handle.abort();
                         return Err(anyhow!(status));
                     }
                 }
@@ -195,7 +280,58 @@ async fn run_session(
 
     heartbeat_handle.abort();
     telemetry_handle.abort();
+    refresh_handle.abort();
     Ok(())
+}
+
+async fn resolve_assignment(
+    config: &AppConfig,
+    identity: &AgentIdentityState,
+    facts: &HostFacts,
+    current: Option<&AssignmentCache>,
+) -> Result<AssignmentCache> {
+    let channel =
+        build_channel_for_target(config, &config.agent.bootstrap_target_addr, Some(identity))
+            .await?;
+    let mut client = RuntimeAssignmentServiceClient::new(channel);
+    let response = client
+        .resolve_runtime_assignment(Request::new(ResolveRuntimeAssignmentRequest {
+            agent_id: facts.agent_id.clone(),
+            host_id: facts.host_id.clone(),
+            zone_id: config.app.zone_id.clone(),
+            last_assignment_epoch: current
+                .map(|item| item.assignment_epoch)
+                .unwrap_or_default(),
+            current_dp_id: current
+                .map(|item| item.preferred_dp_id.clone())
+                .unwrap_or_default(),
+        }))
+        .await?
+        .into_inner();
+    let mut candidates = Vec::new();
+    for item in response.candidate_dps {
+        if item.grpc_addr.trim().is_empty() {
+            continue;
+        }
+        candidates.push(item.grpc_addr.trim().to_string());
+    }
+    if candidates.is_empty() && !response.preferred_dp_addr.trim().is_empty() {
+        candidates.push(response.preferred_dp_addr.trim().to_string());
+    }
+    if candidates.is_empty() {
+        return Err(anyhow!(
+            "runtime assignment returned no dataplane candidates"
+        ));
+    }
+    Ok(AssignmentCache {
+        preferred_dp_id: response.preferred_dp_id,
+        preferred_target: response.preferred_dp_addr.clone(),
+        candidates,
+        assignment_epoch: response.assignment_epoch,
+        refresh_after: Duration::from_secs(response.refresh_after_sec.max(5) as u64),
+        expires_at: SystemTime::now()
+            + Duration::from_secs((response.refresh_after_sec.max(5) * 2) as u64),
+    })
 }
 
 fn new_stream_id(agent_id: &str) -> String {
@@ -259,7 +395,11 @@ impl RuntimeTargetSelector {
 
     fn advance(&mut self) {
         if !self.targets.is_empty() {
-            self.index = (self.index + 1) % self.targets.len();
+            self.index += 1;
+            if self.index >= self.targets.len() {
+                self.targets.clear();
+                return;
+            }
         }
         self.backoff = (self.backoff * 2).min(self.max_backoff);
     }

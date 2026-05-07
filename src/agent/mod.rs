@@ -1,5 +1,6 @@
 pub mod bootstrap;
 pub mod command_handler;
+pub mod command_ledger;
 pub mod frames;
 pub mod heartbeat;
 pub mod registration;

@@ -5,6 +5,7 @@ use std::time::SystemTime;
 use tokio::sync::mpsc;
 
 use crate::agent::command_handler::execute_agent_command;
+use crate::agent::command_ledger::{BeginOrGet, CommandLedger};
 use crate::model::host::HostFacts;
 use crate::transport::grpc::pb::agent_registry_v1::*;
 
@@ -14,6 +15,7 @@ pub async fn handle_server_message(
     _facts: &HostFacts,
     stream_id: &str,
     seq: &Arc<AtomicU64>,
+    command_ledger: &CommandLedger,
 ) -> Result<()> {
     match frame.message {
         Some(hypervisor_to_agent::Message::RegisterAck(ack)) => {
@@ -45,10 +47,53 @@ pub async fn handle_server_message(
                 command_type = %command.r#type,
                 "received hypervisor command"
             );
-            let result = execute_agent_command(&command.r#type, &command.payload_json).await;
-            let (status, result_json, error_message) = match result {
-                Ok(value) => ("succeeded".to_string(), value, String::new()),
-                Err(err) => ("failed".to_string(), "{}".to_string(), err.to_string()),
+            let (status, result_json, error_message) = match command_ledger.begin_or_get(
+                &command.command_id,
+                &command.r#type,
+                &command.payload_json,
+            )? {
+                BeginOrGet::New(_) => {
+                    let result =
+                        execute_agent_command(&command.r#type, &command.payload_json).await;
+                    match result {
+                        Ok(value) => {
+                            command_ledger.complete(
+                                &command.command_id,
+                                "succeeded",
+                                &value,
+                                "",
+                            )?;
+                            ("succeeded".to_string(), value, String::new())
+                        }
+                        Err(err) => {
+                            command_ledger.complete(
+                                &command.command_id,
+                                "failed",
+                                "{}",
+                                &err.to_string(),
+                            )?;
+                            ("failed".to_string(), "{}".to_string(), err.to_string())
+                        }
+                    }
+                }
+                BeginOrGet::Existing(record) => match record.status.as_str() {
+                    "running" => ("running".to_string(), "{}".to_string(), String::new()),
+                    "succeeded" => (
+                        "succeeded".to_string(),
+                        record.result_json,
+                        record.error_message,
+                    ),
+                    _ => (
+                        "failed".to_string(),
+                        record.result_json,
+                        record.error_message,
+                    ),
+                },
+                BeginOrGet::PayloadMismatch(_record) => (
+                    "failed".to_string(),
+                    "{}".to_string(),
+                    "command_id_payload_mismatch".to_string(),
+                ),
             };
             tx.send(AgentToHypervisor {
                 stream_id: stream_id.to_string(),

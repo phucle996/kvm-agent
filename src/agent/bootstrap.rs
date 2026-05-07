@@ -80,7 +80,7 @@ pub async fn build_channel(
     config: &AppConfig,
     identity: Option<&AgentIdentityState>,
 ) -> Result<Channel> {
-    build_channel_for_target(config, &config.agent.runtime_target_addr, identity).await
+    build_channel_for_target(config, &config.agent.bootstrap_target_addr, identity).await
 }
 
 pub async fn build_channel_for_target(

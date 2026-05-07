@@ -2,6 +2,7 @@
 name = "vm-agent"
 env = "prod"
 node_id = "vm-node-prod"
+zone_id = "zone-default"
 
 [grpc]
 bind_addr = "0.0.0.0:50051"

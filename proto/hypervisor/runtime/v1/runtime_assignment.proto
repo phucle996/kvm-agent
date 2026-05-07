@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+package hypervisor.runtime.v1;
+
+option go_package = "controlplane/internal/hypervisor/transport/grpc;grpc";
+
+service RuntimeAssignmentService {
+  rpc ResolveRuntimeAssignment(ResolveRuntimeAssignmentRequest) returns (ResolveRuntimeAssignmentResponse);
+}
+
+message ResolveRuntimeAssignmentRequest {
+  string agent_id = 1;
+  string host_id = 2;
+  string zone_id = 3;
+  int64 last_assignment_epoch = 4;
+  string current_dp_id = 5;
+}
+
+message DataplaneCandidate {
+  string dp_id = 1;
+  string grpc_addr = 2;
+  int32 weight = 3;
+}
+
+message ResolveRuntimeAssignmentResponse {
+  string preferred_dp_id = 1;
+  string preferred_dp_addr = 2;
+  repeated DataplaneCandidate candidate_dps = 3;
+  int64 assignment_epoch = 4;
+  int64 refresh_after_sec = 5;
+  string zone_id = 6;
+}
