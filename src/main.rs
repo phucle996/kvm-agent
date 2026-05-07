@@ -84,6 +84,8 @@ async fn main() {
                     status = "error",
                     error_code = "AGENT_CONNECT_FAILED",
                     error_message = %err,
+                    error_detail = %format!("{err:#}"),
+                    error_debug = ?err,
                     "agent hypervisor enrollment loop failed"
                 );
             }

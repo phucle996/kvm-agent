@@ -42,9 +42,6 @@ impl AppSection {
         if self.node_id.trim().is_empty() {
             return Err("APP_NODE_ID must not be empty".to_string());
         }
-        if self.zone_id.trim().is_empty() {
-            return Err("APP_ZONE_ID must not be empty".to_string());
-        }
         if self.shutdown_timeout.is_zero() {
             return Err("SHUTDOWN_TIMEOUT_SEC must be > 0".to_string());
         }

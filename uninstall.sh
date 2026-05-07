@@ -11,6 +11,7 @@ SERVICE_USER="aurora-kvm-agent"
 SERVICE_GROUP="aurora"
 INSTALL_BIN="/usr/local/bin/${SERVICE_NAME}"
 CONFIG_DIR="/etc/${SERVICE_NAME}"
+ENV_FILE="${CONFIG_DIR}/.env"
 TLS_DIR="${CONFIG_DIR}/tls"
 STATE_DIR="/var/lib/${SERVICE_NAME}"
 LOG_DIR="/var/log/${SERVICE_NAME}"
@@ -18,11 +19,10 @@ SYSTEMD_UNIT="/etc/systemd/system/${SERVICE_NAME}.service"
 
 PURGE="false"
 DRY_RUN="false"
-
-# ─── args ────────────────────────────────────────────────────────────────────
+CONFIRM="false"
 
 usage() {
-  cat <<'EOF'
+  cat <<'EOF_USAGE'
 Usage:
   uninstall.sh [options]
 
@@ -31,12 +31,12 @@ Options:
   --yes, -y    Skip confirmation prompt
   --dry-run    Print actions without executing them
   -h, --help   Show this help text
-EOF
+EOF_USAGE
 }
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --purge)   PURGE="true";   shift ;;
+    --purge)   PURGE="true"; shift ;;
     --yes|-y)  CONFIRM="true"; shift ;;
     --dry-run) DRY_RUN="true"; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -44,17 +44,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# ─── helpers ─────────────────────────────────────────────────────────────────
-
 step() { echo "  [uninstall] $*"; }
-
-run() {
-  if [ "$DRY_RUN" = "true" ]; then
-    echo "  [dry-run]   $*"
-  else
-    "$@"
-  fi
-}
 
 sudo_run() {
   if [ "$DRY_RUN" = "true" ]; then
@@ -64,20 +54,51 @@ sudo_run() {
   fi
 }
 
-# Require root (or sudo) for real runs
+cleanup_group_membership() {
+  local group="$1"
+  local user="$2"
+
+  if ! getent group "$group" >/dev/null 2>&1; then
+    step "Group '${group}' not found, skipping membership cleanup."
+    return
+  fi
+
+  if ! id "$user" >/dev/null 2>&1; then
+    step "User '${user}' not found, skipping membership cleanup for group '${group}'."
+    return
+  fi
+
+  local current_members
+  current_members="$(getent group "$group" | cut -d: -f4)"
+  if [ -z "$current_members" ]; then
+    step "Group '${group}' has no explicit members, skipping membership cleanup."
+    return
+  fi
+
+  if ! printf '%s' "$current_members" | tr ',' '\n' | grep -Fxq "$user"; then
+    step "User '${user}' is not an explicit member of '${group}', skipping."
+    return
+  fi
+
+  local updated_members
+  updated_members="$(printf '%s' "$current_members" | tr ',' '\n' | grep -Fxv "$user" | paste -sd, -)"
+  step "Removing user '${user}' from group '${group}'..."
+  sudo_run gpasswd -M "$updated_members" "$group"
+}
+
 if [ "$DRY_RUN" = "false" ] && [ "$(id -u)" -ne 0 ]; then
   exec sudo "$0" "$@"
 fi
 
-# ─── banner ──────────────────────────────────────────────────────────────────
-
-cat <<EOF
+cat <<EOF_BANNER
 
   Aurora KVM Agent — Uninstaller
   ────────────────────────────────────────────
   service:    ${SERVICE_NAME}
   binary:     ${INSTALL_BIN}
   config:     ${CONFIG_DIR}
+  env:        ${ENV_FILE}
+  tls:        ${TLS_DIR}
   state:      ${STATE_DIR}
   logs:       ${LOG_DIR}
   systemd:    ${SYSTEMD_UNIT}
@@ -85,9 +106,9 @@ cat <<EOF
   dry run:    ${DRY_RUN}
   ────────────────────────────────────────────
 
-EOF
+EOF_BANNER
 
-if [ "$DRY_RUN" = "false" ] && [ "${CONFIRM:-false}" = "false" ]; then
+if [ "$DRY_RUN" = "false" ] && [ "$CONFIRM" = "false" ]; then
   read -r -p "Proceed with uninstallation? [y/N] " confirm
   case "$confirm" in
     [yY][eE][sS]|[yY]) ;;
@@ -96,10 +117,7 @@ if [ "$DRY_RUN" = "false" ] && [ "${CONFIRM:-false}" = "false" ]; then
   echo
 fi
 
-# ─── 1. stop & disable service ───────────────────────────────────────────────
-
 step "Stopping and disabling ${SERVICE_NAME} service..."
-
 if systemctl list-unit-files "${SERVICE_NAME}.service" &>/dev/null; then
   if systemctl is-active --quiet "${SERVICE_NAME}.service"; then
     sudo_run systemctl stop "${SERVICE_NAME}.service"
@@ -111,8 +129,6 @@ else
   step "Service unit not found, skipping stop/disable."
 fi
 
-# ─── 2. remove systemd unit ──────────────────────────────────────────────────
-
 step "Removing systemd unit..."
 if [ -f "$SYSTEMD_UNIT" ]; then
   sudo_run rm -f "$SYSTEMD_UNIT"
@@ -122,8 +138,6 @@ else
   step "Unit file ${SYSTEMD_UNIT} not found, skipping."
 fi
 
-# ─── 3. remove binary ────────────────────────────────────────────────────────
-
 step "Removing binary..."
 if [ -f "$INSTALL_BIN" ]; then
   sudo_run rm -f "$INSTALL_BIN"
@@ -131,26 +145,19 @@ else
   step "Binary ${INSTALL_BIN} not found, skipping."
 fi
 
-# ─── 4. remove dns entry from /etc/hosts ─────────────────────────────────────
-# We try to find if there's a 127.0.0.1 entry with the server_name from the .env
-if [ -f "${CONFIG_DIR}/.env" ]; then
-  SERVER_NAME_VAL="$(grep '^AGENT_SERVER_NAME=' "${CONFIG_DIR}/.env" | cut -d'=' -f2- | tr -d '"' || true)"
-  if [ -n "$SERVER_NAME_VAL" ] && [ "$SERVER_NAME_VAL" != "localhost" ]; then
-    step "Removing '${SERVER_NAME_VAL}' from /etc/hosts (if present)..."
-    sudo_run sed -i "/127.0.0.1 ${SERVER_NAME_VAL}/d" /etc/hosts
-  fi
+step "Removing TLS identity directory..."
+if [ -d "$TLS_DIR" ]; then
+  sudo_run rm -rf "$TLS_DIR"
+else
+  step "TLS dir ${TLS_DIR} not found, skipping."
 fi
 
-# ─── 5. remove config & TLS directory ────────────────────────────────────────
-
-step "Removing config directory (includes TLS certs)..."
+step "Removing remaining config directory..."
 if [ -d "$CONFIG_DIR" ]; then
   sudo_run rm -rf "$CONFIG_DIR"
 else
   step "Config dir ${CONFIG_DIR} not found, skipping."
 fi
-
-# ─── 5. remove state directory ───────────────────────────────────────────────
 
 step "Removing state directory..."
 if [ -d "$STATE_DIR" ]; then
@@ -159,8 +166,6 @@ else
   step "State dir ${STATE_DIR} not found, skipping."
 fi
 
-# ─── 6. remove log directory ─────────────────────────────────────────────────
-
 step "Removing log directory..."
 if [ -d "$LOG_DIR" ]; then
   sudo_run rm -rf "$LOG_DIR"
@@ -168,19 +173,10 @@ else
   step "Log dir ${LOG_DIR} not found, skipping."
 fi
 
-# ─── 8. remove dns entry from /etc/hosts ─────────────────────────────────────
-# We try to find if there's a 127.0.0.1 entry with the server_name from the .env
-if [ -f "${CONFIG_DIR}/.env" ]; then
-  SERVER_NAME_VAL="$(grep '^AGENT_SERVER_NAME=' "${CONFIG_DIR}/.env" | cut -d'=' -f2- | tr -d '"' || true)"
-  if [ -n "$SERVER_NAME_VAL" ] && [ "$SERVER_NAME_VAL" != "localhost" ]; then
-    step "Removing '${SERVER_NAME_VAL}' from /etc/hosts (if present)..."
-    sudo_run sed -i "/127.0.0.1 ${SERVER_NAME_VAL}/d" /etc/hosts
-  fi
-fi
-
-# ─── 7. optionally remove service user & group ───────────────────────────────
-
 if [ "$PURGE" = "true" ]; then
+  cleanup_group_membership "kvm" "$SERVICE_USER"
+  cleanup_group_membership "libvirt" "$SERVICE_USER"
+
   step "Removing service user '${SERVICE_USER}'..."
   if id "$SERVICE_USER" &>/dev/null; then
     sudo_run userdel --remove "$SERVICE_USER" 2>/dev/null || sudo_run userdel "$SERVICE_USER"
@@ -188,7 +184,6 @@ if [ "$PURGE" = "true" ]; then
     step "User '${SERVICE_USER}' not found, skipping."
   fi
 
-  # Only remove the group if no other users belong to it
   step "Removing service group '${SERVICE_GROUP}' (if empty)..."
   if getent group "$SERVICE_GROUP" &>/dev/null; then
     members="$(getent group "$SERVICE_GROUP" | cut -d: -f4)"
@@ -204,13 +199,12 @@ else
   step "Skipping user/group removal (pass --purge to also remove them)."
 fi
 
-# ─── done ────────────────────────────────────────────────────────────────────
-
 echo
 if [ "$DRY_RUN" = "true" ]; then
   echo "Dry run complete. No changes were made."
 else
   echo "aurora-kvm-agent has been uninstalled."
+  echo "Note: KVM/libvirt packages, services, and host-level access changes from install.sh are intentionally left in place."
   if [ "$PURGE" = "false" ]; then
     echo "Note: service user '${SERVICE_USER}' and group '${SERVICE_GROUP}' were kept."
     echo "      Run with --purge to also remove them."

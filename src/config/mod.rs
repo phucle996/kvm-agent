@@ -58,7 +58,7 @@ pub struct AppConfig {
 pub fn load_from_env() -> Result<AppConfig> {
     let app_name = optional_env("APP_NAME").unwrap_or_else(|| "aurora-kvm-agent".to_string());
     let node_id = required_env("APP_NODE_ID")?;
-    let zone_id = required_env("APP_ZONE_ID")?;
+    let zone_id = optional_env("APP_ZONE_ID").unwrap_or_default();
 
     let shutdown_timeout_secs = optional_env("SHUTDOWN_TIMEOUT_SEC")
         .unwrap_or_else(|| "15".to_string())

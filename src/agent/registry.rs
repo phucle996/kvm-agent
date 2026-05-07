@@ -55,10 +55,32 @@ pub async fn connect_hypervisor(config: AppConfig, shutdown: CancellationToken) 
                         if SystemTime::now() < cache.expires_at && !cache.candidates.is_empty() {
                             cache.clone()
                         } else {
-                            return Err(err);
+                            tracing::warn!(
+                                component = "agent",
+                                operation = "resolve_runtime_assignment",
+                                status = "retrying",
+                                error_message = %err,
+                                error_detail = %format!("{err:#}"),
+                                error_debug = ?err,
+                                retry_in_ms = backoff.as_millis() as u64,
+                                "runtime assignment unavailable; will retry"
+                            );
+                            tokio::time::sleep(backoff).await;
+                            backoff = (backoff * 2).min(config.agent.failover_max_backoff);
+                            continue;
                         }
                     } else {
-                        return Err(err);
+                        tracing::warn!(
+                            component = "agent",
+                            operation = "resolve_runtime_assignment",
+                            status = "retrying",
+                            error_message = %err,
+                            retry_in_ms = backoff.as_millis() as u64,
+                            "runtime assignment unavailable; will retry"
+                        );
+                        tokio::time::sleep(backoff).await;
+                        backoff = (backoff * 2).min(config.agent.failover_max_backoff);
+                        continue;
                     }
                 }
             };
@@ -99,6 +121,8 @@ pub async fn connect_hypervisor(config: AppConfig, shutdown: CancellationToken) 
                         status = "error",
                         target = %target,
                         error_message = %err,
+                        error_detail = %format!("{err:#}"),
+                        error_debug = ?err,
                         retry_in = ?retry_in,
                         is_auth_failure = is_auth,
                         "hypervisor session failed, rotating runtime target"
@@ -182,6 +206,16 @@ async fn run_session(
     let telemetry_zone = config.app.zone_id.clone();
     let telemetry_interval = config.agent.telemetry_interval.max(Duration::from_secs(5));
     let telemetry_handle = tokio::spawn(async move {
+        if telemetry_zone.trim().is_empty() {
+            tracing::info!(
+                component = "agent",
+                operation = "telemetry",
+                status = "skipped",
+                "zone_id is not assigned yet; telemetry loop will stay idle until zone-aware config is provided"
+            );
+            telemetry_shutdown.cancelled().await;
+            return;
+        }
         run_telemetry_loop(
             telemetry_client,
             telemetry_facts,

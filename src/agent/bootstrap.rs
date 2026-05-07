@@ -88,7 +88,7 @@ pub async fn build_channel_for_target(
     target_addr: &str,
     identity: Option<&AgentIdentityState>,
 ) -> Result<Channel> {
-    let target = normalize_endpoint(target_addr);
+    let target = normalize_endpoint(target_addr, identity.is_some());
     let use_tls = target.starts_with("https://");
 
     if identity.is_none() && use_tls && std::fs::metadata(&config.agent.ca_path).is_err() {
@@ -171,12 +171,15 @@ pub async fn build_channel_for_target(
     }
 }
 
-fn normalize_endpoint(raw: &str) -> String {
+fn normalize_endpoint(raw: &str, prefer_tls: bool) -> String {
     let trimmed = raw.trim();
     if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
-        trimmed.to_string()
-    } else {
+        return trimmed.to_string();
+    }
+    if prefer_tls {
         format!("https://{trimmed}")
+    } else {
+        format!("http://{trimmed}")
     }
 }
 
