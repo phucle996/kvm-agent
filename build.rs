@@ -5,7 +5,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "proto/agent/registry/v1/agent_enrollment.proto",
         "proto/agent/registry/v1/agent_telemetry.proto",
         "proto/agent/registry/v1/agent_registry.proto",
-        "../dataplane/proto/hypervisor/telemetry/v1/hypervisor_telemetry.proto",
+        "proto/hypervisor/telemetry/v1/hypervisor_telemetry.proto",
         "proto/hypervisor/runtime/v1/runtime_assignment.proto",
     ];
 
@@ -14,7 +14,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build_server(true)
         .extern_path(".google.protobuf.Timestamp", "::prost_types::Timestamp")
         .compile_well_known_types(true)
-        .compile_protos(&protos, &[".", ".."])?;
+        .compile_protos(&protos, &["."])?;
 
     Ok(())
 }

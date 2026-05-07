@@ -1,0 +1,55 @@
+syntax = "proto3";
+
+package hypervisor.telemetry.v1;
+
+import "google/protobuf/timestamp.proto";
+
+message NodeTelemetryMetrics {
+  double cpu_used_percent = 1;
+  double cpu_used_cores = 2;
+  double ram_used_bytes = 3;
+  double ram_used_percent = 4;
+  double disk_used_bytes = 5;
+  double disk_used_percent = 6;
+  int64 network_rx_bps = 7;
+  int64 network_tx_bps = 8;
+  uint64 disk_read_bps = 9;
+  uint64 disk_write_bps = 10;
+  uint64 filesystem_used_bytes = 11;
+  uint64 filesystem_total_bytes = 12;
+  uint32 vm_count = 13;
+  bool agent_healthy = 14;
+}
+
+message VMTelemetryMetrics {
+  string vm_id = 1;
+  string node_id = 2;
+  string zone = 3;
+  string power_state = 4;
+  double cpu_used_percent = 5;
+  double ram_used_bytes = 6;
+  int64 network_rx_bps = 7;
+  int64 network_tx_bps = 8;
+  uint64 disk_read_bps = 9;
+  uint64 disk_write_bps = 10;
+  google.protobuf.Timestamp sampled_at = 11;
+}
+
+message PushHypervisorTelemetrySnapshotRequest {
+  uint32 schema_version = 1;
+  string zone = 2;
+  string node_id = 3;
+  string agent_id = 4;
+  google.protobuf.Timestamp collected_at = 5;
+  NodeTelemetryMetrics node = 10;
+  repeated VMTelemetryMetrics vms = 11;
+}
+
+message PushHypervisorTelemetrySnapshotResponse {
+  string status = 1;
+  google.protobuf.Timestamp accepted_at = 2;
+}
+
+service HypervisorTelemetryService {
+  rpc PushTelemetrySnapshot(PushHypervisorTelemetrySnapshotRequest) returns (PushHypervisorTelemetrySnapshotResponse);
+}
