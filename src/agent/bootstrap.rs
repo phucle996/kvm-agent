@@ -1,5 +1,4 @@
 use anyhow::{anyhow, Context, Result};
-use std::sync::Arc;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
 use tonic::{Code, Request, Status};
 
@@ -37,8 +36,11 @@ pub async fn bootstrap_enroll(
         .generate_csr(&private_key, &format!("vm-agent:{}", facts.agent_id))
         .context("generate bootstrap csr")?;
 
-    let channel =
-        build_channel_for_target(config, &config.agent.bootstrap_target_addr, None).await?;
+    // Bootstrap is the only RPC path that is allowed to connect before the
+    // agent has a client certificate. We keep that rule explicit by using a
+    // dedicated bootstrap channel builder instead of a shared helper that can
+    // silently mix plaintext and mTLS behavior.
+    let channel = build_bootstrap_channel(config).await?;
     let mut client = AgentRegistryClient::new(channel);
 
     let response = client
@@ -76,111 +78,93 @@ pub async fn bootstrap_enroll(
     Ok(state)
 }
 
-pub async fn build_channel(
+pub async fn build_mtls_channel_for_controlplane(
     config: &AppConfig,
-    identity: Option<&AgentIdentityState>,
+    identity: &AgentIdentityState,
 ) -> Result<Channel> {
-    build_channel_for_target(config, &config.agent.bootstrap_target_addr, identity).await
+    build_mtls_channel_for_target(config, &config.agent.bootstrap_target_addr, identity).await
 }
 
-pub async fn build_channel_for_target(
+pub async fn build_mtls_channel_for_target(
     config: &AppConfig,
     target_addr: &str,
-    identity: Option<&AgentIdentityState>,
+    identity: &AgentIdentityState,
 ) -> Result<Channel> {
-    let target = normalize_endpoint(target_addr, identity.is_some());
-    let use_tls = target.starts_with("https://");
-
-    if identity.is_none() && use_tls && std::fs::metadata(&config.agent.ca_path).is_err() {
-        let connect_timeout = config.agent.connect_timeout;
-        tracing::warn!(
-            component = "agent",
-            operation = "build_channel",
-            target = %target_addr,
-            "no CA certificate found for bootstrap, using insecure TLS (skip verification)"
-        );
-
-        let mut root_store = rustls::RootCertStore::empty();
-        root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-
-        let mut rustls_config = rustls::ClientConfig::builder()
-            .with_root_certificates(root_store)
-            .with_no_client_auth();
-
-        rustls_config.alpn_protocols = vec![b"h2".to_vec()];
-        rustls_config
-            .dangerous()
-            .set_certificate_verifier(Arc::new(NoCertificateVerification));
-
-        let target_insecure = target.replace("https://", "http://");
-        return Ok(Endpoint::from_shared(target_insecure)?
-            .connect_timeout(connect_timeout)
-            .connect_with_connector(tower::service_fn(move |uri: http::Uri| {
-                let host = uri.host().unwrap_or("localhost").to_string();
-                let port = uri.port_u16().unwrap_or(443);
-                let addr = format!("{}:{}", host, port);
-                let rustls_config = rustls_config.clone();
-
-                async move {
-                    let stream = tokio::time::timeout(
-                        connect_timeout,
-                        tokio::net::TcpStream::connect(&addr),
-                    )
-                    .await
-                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::TimedOut, e))??;
-                    let connector = tokio_rustls::TlsConnector::from(Arc::new(rustls_config));
-                    let domain = rustls::pki_types::ServerName::try_from(host.clone())
-                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?
-                        .to_owned();
-
-                    let tls_stream = connector.connect(domain, stream).await?;
-                    Ok::<_, std::io::Error>(hyper_util::rt::tokio::TokioIo::new(tls_stream))
-                }
-            }))
-            .await?);
-    }
-
+    // Every RPC after bootstrap must use mTLS. If the target does not already
+    // declare a scheme we force it to TLS so the runtime path cannot downgrade
+    // to plaintext by accident.
+    let target = normalize_mtls_endpoint(target_addr);
     let endpoint = Endpoint::from_shared(target)
-        .context("build hypervisor endpoint")?
+        .context("build hypervisor mTLS endpoint")?
         .connect_timeout(config.agent.connect_timeout);
 
-    if use_tls {
-        let mut tls = ClientTlsConfig::new();
-        let server_name = server_name_for_target(config, target_addr);
-        tls = tls.domain_name(server_name);
-
-        let ca_pem = match identity {
-            Some(state) if !state.ca_bundle_pem.is_empty() => state.ca_bundle_pem.clone(),
-            _ => std::fs::read(&config.agent.ca_path)
-                .with_context(|| format!("read ca bundle {}", config.agent.ca_path))?,
-        };
-        tls = tls.ca_certificate(Certificate::from_pem(ca_pem));
-
-        if let Some(state) = identity {
-            if !state.client_cert_pem.is_empty() && !state.client_key_pem.is_empty() {
-                tls = tls.identity(Identity::from_pem(
-                    state.client_cert_pem.clone(),
-                    state.client_key_pem.clone(),
-                ));
-            }
-        }
-
-        Ok(endpoint.tls_config(tls)?.connect().await?)
-    } else {
-        Ok(endpoint.connect().await?)
+    if identity.ca_bundle_pem.is_empty() {
+        return Err(anyhow!(
+            "missing CA bundle for mTLS controlplane/dataplane connection"
+        ));
     }
+    if identity.client_cert_pem.is_empty() || identity.client_key_pem.is_empty() {
+        return Err(anyhow!(
+            "missing client certificate or private key for mTLS controlplane/dataplane connection"
+        ));
+    }
+
+    let mut tls = ClientTlsConfig::new();
+    tls = tls.domain_name(server_name_for_target(config, target_addr));
+    tls = tls.ca_certificate(Certificate::from_pem(identity.ca_bundle_pem.clone()));
+    tls = tls.identity(Identity::from_pem(
+        identity.client_cert_pem.clone(),
+        identity.client_key_pem.clone(),
+    ));
+
+    Ok(endpoint.tls_config(tls)?.connect().await?)
 }
 
-fn normalize_endpoint(raw: &str, prefer_tls: bool) -> String {
+async fn build_bootstrap_channel(config: &AppConfig) -> Result<Channel> {
+    // Bootstrap may use plaintext because the agent does not have a client
+    // certificate yet. We preserve explicit schemes when provided, and default
+    // scheme-less bootstrap endpoints to plaintext for backwards compatibility.
+    let target = normalize_bootstrap_endpoint(&config.agent.bootstrap_target_addr);
+    let endpoint = Endpoint::from_shared(target.clone())
+        .context("build hypervisor bootstrap endpoint")?
+        .connect_timeout(config.agent.connect_timeout);
+
+    if target.starts_with("https://") {
+        let mut tls = ClientTlsConfig::new();
+        tls = tls.domain_name(server_name_for_target(
+            config,
+            &config.agent.bootstrap_target_addr,
+        ));
+
+        // Bootstrap still validates the server certificate when a CA bundle is
+        // available locally. The only relaxed rule here is that client certs are
+        // not required before enrollment succeeds.
+        let ca_pem = std::fs::read(&config.agent.ca_path)
+            .with_context(|| format!("read ca bundle {}", config.agent.ca_path))?;
+        tls = tls.ca_certificate(Certificate::from_pem(ca_pem));
+        return Ok(endpoint.tls_config(tls)?.connect().await?);
+    }
+
+    Ok(endpoint.connect().await?)
+}
+
+fn normalize_bootstrap_endpoint(raw: &str) -> String {
     let trimmed = raw.trim();
     if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
         return trimmed.to_string();
     }
-    if prefer_tls {
-        format!("https://{trimmed}")
-    } else {
-        format!("http://{trimmed}")
+    format!("http://{trimmed}")
+}
+
+fn normalize_mtls_endpoint(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.starts_with("https://") {
+        return trimmed.to_string();
     }
+    if trimmed.starts_with("http://") {
+        return format!("https://{}", trimmed.trim_start_matches("http://"));
+    }
+    format!("https://{trimmed}")
 }
 
 fn server_name_for_target(config: &AppConfig, target_addr: &str) -> String {
@@ -225,44 +209,4 @@ fn grpc_status_in_chain(err: &anyhow::Error) -> Option<&Status> {
         }
     }
     None
-}
-
-#[derive(Debug)]
-struct NoCertificateVerification;
-
-impl rustls::client::danger::ServerCertVerifier for NoCertificateVerification {
-    fn verify_server_cert(
-        &self,
-        _end_entity: &rustls::pki_types::CertificateDer<'_>,
-        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
-        _server_name: &rustls::pki_types::ServerName<'_>,
-        _ocsp_response: &[u8],
-        _now: rustls::pki_types::UnixTime,
-    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-        Ok(rustls::client::danger::ServerCertVerified::assertion())
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        _message: &[u8],
-        _cert: &rustls::pki_types::CertificateDer<'_>,
-        _dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        _message: &[u8],
-        _cert: &rustls::pki_types::CertificateDer<'_>,
-        _dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        rustls::crypto::ring::default_provider()
-            .signature_verification_algorithms
-            .supported_schemes()
-    }
 }

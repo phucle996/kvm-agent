@@ -16,7 +16,8 @@ use crate::transport::grpc::pb::hypervisor_runtime_v1::ResolveRuntimeAssignmentR
 use crate::transport::grpc::pb::hypervisor_telemetry_v1::hypervisor_telemetry_service_client::HypervisorTelemetryServiceClient;
 
 use crate::agent::bootstrap::{
-    build_channel_for_target, ensure_identity, is_auth_failure, is_fatal_bootstrap_error,
+    build_mtls_channel_for_controlplane, build_mtls_channel_for_target, ensure_identity,
+    is_auth_failure, is_fatal_bootstrap_error,
 };
 use crate::agent::command_ledger::CommandLedger;
 use crate::agent::frames::register_frame;
@@ -159,7 +160,9 @@ async fn run_session(
     shutdown: CancellationToken,
 ) -> Result<()> {
     let _ = store;
-    let channel = build_channel_for_target(config, runtime_target, Some(identity)).await?;
+    // Dataplane runtime stream is authoritative and must never downgrade to
+    // plaintext after bootstrap has completed.
+    let channel = build_mtls_channel_for_target(config, runtime_target, identity).await?;
     let mut client = AgentRegistryClient::new(channel);
 
     let (tx, rx) = mpsc::channel(100);
@@ -198,8 +201,9 @@ async fn run_session(
         .await;
     });
 
-    let telemetry_channel =
-        build_channel_for_target(config, runtime_target, Some(identity)).await?;
+    // Telemetry snapshots share the same post-enrollment mTLS boundary as the
+    // runtime stream and use the same identity material.
+    let telemetry_channel = build_mtls_channel_for_target(config, runtime_target, identity).await?;
     let telemetry_client = HypervisorTelemetryServiceClient::new(telemetry_channel);
     let telemetry_shutdown = shutdown.clone();
     let telemetry_facts = facts.clone();
@@ -324,9 +328,9 @@ async fn resolve_assignment(
     facts: &HostFacts,
     current: Option<&AssignmentCache>,
 ) -> Result<AssignmentCache> {
-    let channel =
-        build_channel_for_target(config, &config.agent.bootstrap_target_addr, Some(identity))
-            .await?;
+    // Runtime assignment is a post-enrollment controlplane RPC, so it must
+    // always go over mTLS using the identity obtained from bootstrap.
+    let channel = build_mtls_channel_for_controlplane(config, identity).await?;
     let mut client = RuntimeAssignmentServiceClient::new(channel);
     let response = client
         .resolve_runtime_assignment(Request::new(ResolveRuntimeAssignmentRequest {
