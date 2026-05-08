@@ -336,7 +336,7 @@ mod tests {
             disk_bytes: 50 * 1024 * 1024 * 1024,
             disk_model: "disk".to_string(),
             gpu_cores: 0,
-            gpu_memory_bytes: 0,
+            gpu_memory_gib: 0,
             gpu_model: "".to_string(),
             network_interfaces: Vec::new(),
         }

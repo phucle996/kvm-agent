@@ -45,7 +45,7 @@ pub fn collect_host_facts(config: &AppConfig) -> HostFacts {
         disk_bytes,
         disk_model,
         gpu_cores: 0,
-        gpu_memory_bytes: 0,
+        gpu_memory_gib: 0,
         gpu_model,
         network_interfaces,
     }
@@ -68,7 +68,7 @@ pub fn host_registration_from_facts(facts: &HostFacts) -> HostRegistration {
         disk_bytes: facts.disk_bytes,
         disk_model: facts.disk_model.clone(),
         gpu_cores: facts.gpu_cores,
-        gpu_memory_bytes: facts.gpu_memory_bytes,
+        gpu_memory_gib: facts.gpu_memory_gib,
         gpu_model: facts.gpu_model.clone(),
         network_interfaces: facts.network_interfaces.clone(),
     }

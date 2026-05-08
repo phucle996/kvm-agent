@@ -33,7 +33,7 @@ message RegisterHost {
   int64 memory_bytes = 10;
   int64 disk_bytes = 11;
   int32 gpu_cores = 12;
-  int64 gpu_memory_bytes = 13;
+  int64 gpu_memory_gib = 13;
   string cpu_model = 14;
   string ram_model = 15;
   string disk_model = 16;

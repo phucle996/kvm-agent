@@ -390,7 +390,7 @@ fn host_registration_from_facts(facts: &HostFacts) -> HostRegistration {
         memory_bytes: facts.memory_bytes,
         disk_bytes: facts.disk_bytes,
         gpu_cores: facts.gpu_cores,
-        gpu_memory_bytes: facts.gpu_memory_bytes,
+        gpu_memory_gib: facts.gpu_memory_gib,
         cpu_model: facts.cpu_model.clone(),
         ram_model: facts.ram_model.clone(),
         disk_model: facts.disk_model.clone(),

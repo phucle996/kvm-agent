@@ -29,7 +29,7 @@ pub fn register_frame(facts: &HostFacts, stream_id: &str, seq: u64) -> AgentToHy
             memory_bytes: facts.memory_bytes,
             disk_bytes: facts.disk_bytes,
             gpu_cores: facts.gpu_cores,
-            gpu_memory_bytes: facts.gpu_memory_bytes,
+            gpu_memory_gib: facts.gpu_memory_gib,
             cpu_model: facts.cpu_model.clone(),
             ram_model: facts.ram_model.clone(),
             disk_model: facts.disk_model.clone(),
