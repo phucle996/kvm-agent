@@ -14,6 +14,7 @@ SYSTEMD_UNIT="/etc/systemd/system/${SERVICE_NAME}.service"
 
 SERVER=""
 RUNTIME_SERVER=""
+ZONE_ID=""
 TOKEN=""
 SERVER_NAME=""
 CA_CERT_SRC=""
@@ -32,6 +33,7 @@ Usage:
 Options:
   --server <value>            Controlplane bootstrap gRPC endpoint, e.g. hypervisor.example.com:9443
   --runtime-server <value>    Dataplane runtime gRPC endpoint, e.g. http://dataplane-zone-default.example.com:50051
+  --zone <value>              Zone ID assigned at bootstrap time and written to APP_ZONE_ID
   --token <value>             One-time bootstrap token created by Hypervisor
   --ca <path>                 Path to the Hypervisor CA certificate (PEM); auto-detected if omitted
   --server-name <value>       TLS SNI override; auto-derived from --server if omitted
@@ -293,6 +295,10 @@ while [ $# -gt 0 ]; do
       RUNTIME_SERVER="${2:-}"
       shift 2
       ;;
+    --zone)
+      ZONE_ID="${2:-}"
+      shift 2
+      ;;
     --token)
       TOKEN="${2:-}"
       shift 2
@@ -337,7 +343,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-if [ -z "$SERVER" ] || [ -z "$TOKEN" ]; then
+if [ -z "$SERVER" ] || [ -z "$TOKEN" ] || [ -z "$ZONE_ID" ]; then
   usage
   exit 1
 fi
@@ -376,6 +382,7 @@ Dry run:
   arch:              ${ARCH}
   server:            ${SERVER}
   runtime_server:    ${RUNTIME_SERVER}
+  zone_id:           ${ZONE_ID}
   server_name:       ${SERVER_NAME}
   ca_cert_src:       ${CA_CERT_SRC:-auto-detect}
   binary_url:        ${SELECTED_BINARY_URL}
@@ -453,6 +460,7 @@ else
   NODE_ID="$(generate_node_id)"
 fi
 set_env_value "$TMP_ENV" "APP_NODE_ID" "$NODE_ID"
+set_env_value "$TMP_ENV" "APP_ZONE_ID" "$ZONE_ID"
 set_env_value "$TMP_ENV" "SHUTDOWN_TIMEOUT_SEC" "15"
 set_env_value "$TMP_ENV" "GRPC_BIND_ADDR" "$GRPC_BIND_ADDR"
 set_env_value "$TMP_ENV" "AGENT_BOOTSTRAP_TARGET_ADDR" "$SERVER"
