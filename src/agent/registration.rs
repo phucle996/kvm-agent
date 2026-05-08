@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
+use std::time::Duration;
 use std::time::SystemTime;
 use tokio::sync::mpsc;
 
@@ -9,10 +10,13 @@ use crate::agent::command_ledger::{BeginOrGet, CommandLedger};
 use crate::model::host::HostFacts;
 use crate::transport::grpc::pb::agent_registry_v1::*;
 
+const HOST_INVENTORY_SEND_MAX_ATTEMPTS: usize = 3;
+const HOST_INVENTORY_SEND_RETRY_DELAY: Duration = Duration::from_millis(200);
+
 pub async fn handle_server_message(
     frame: HypervisorToAgent,
     tx: &mpsc::Sender<AgentToHypervisor>,
-    _facts: &HostFacts,
+    facts: &HostFacts,
     stream_id: &str,
     seq: &Arc<AtomicU64>,
     command_ledger: &CommandLedger,
@@ -27,6 +31,7 @@ pub async fn handle_server_message(
                 node_id = %ack.node_id,
                 "host registration acknowledged"
             );
+            send_host_inventory_with_retry(tx, facts, stream_id, seq).await?;
         }
         Some(hypervisor_to_agent::Message::HeartbeatAck(ack)) => {
             tracing::debug!(
@@ -100,8 +105,8 @@ pub async fn handle_server_message(
                 seq: seq.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
                 message: Some(agent_to_hypervisor::Message::CommandResult(
                     AgentCommandResult {
-                        agent_id: _facts.agent_id.clone(),
-                        host_id: _facts.host_id.clone(),
+                        agent_id: facts.agent_id.clone(),
+                        host_id: facts.host_id.clone(),
                         command_id: command.command_id,
                         status,
                         result_json,
@@ -118,4 +123,53 @@ pub async fn handle_server_message(
         None => {}
     }
     Ok(())
+}
+
+async fn send_host_inventory_with_retry(
+    tx: &mpsc::Sender<AgentToHypervisor>,
+    facts: &HostFacts,
+    stream_id: &str,
+    seq: &Arc<AtomicU64>,
+) -> Result<()> {
+    let mut last_error = None;
+    for attempt in 1..=HOST_INVENTORY_SEND_MAX_ATTEMPTS {
+        let frame = crate::agent::frames::host_inventory_frame(
+            facts,
+            stream_id,
+            seq.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
+        );
+        match tx.send(frame).await {
+            Ok(_) => {
+                if attempt > 1 {
+                    tracing::info!(
+                        component = "agent",
+                        operation = "send_host_inventory",
+                        status = "retried_success",
+                        attempts = attempt as u64,
+                        "host inventory sent after retry"
+                    );
+                }
+                return Ok(());
+            }
+            Err(err) => {
+                tracing::warn!(
+                    component = "agent",
+                    operation = "send_host_inventory",
+                    status = "retrying",
+                    attempt = attempt as u64,
+                    max_attempts = HOST_INVENTORY_SEND_MAX_ATTEMPTS as u64,
+                    "host inventory send failed"
+                );
+                last_error = Some(err);
+                if attempt < HOST_INVENTORY_SEND_MAX_ATTEMPTS {
+                    tokio::time::sleep(HOST_INVENTORY_SEND_RETRY_DELAY).await;
+                }
+            }
+        }
+    }
+
+    match last_error {
+        Some(err) => Err(err).context("send host inventory after retries")?,
+        None => Ok(()),
+    }
 }
