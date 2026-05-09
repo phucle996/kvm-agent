@@ -6,6 +6,7 @@ option go_package = "controlplane/internal/hypervisor/transport/grpc;grpc";
 
 service RuntimeAssignmentService {
   rpc ResolveRuntimeAssignment(ResolveRuntimeAssignmentRequest) returns (ResolveRuntimeAssignmentResponse);
+  rpc RotateAgentCertificate(RotateAgentCertificateRequest) returns (RotateAgentCertificateResponse);
 }
 
 message ResolveRuntimeAssignmentRequest {
@@ -29,4 +30,17 @@ message ResolveRuntimeAssignmentResponse {
   int64 assignment_epoch = 4;
   int64 refresh_after_sec = 5;
   string zone_id = 6;
+}
+
+message RotateAgentCertificateRequest {
+  string agent_id = 1;
+  string csr_pem = 2;
+}
+
+message RotateAgentCertificateResponse {
+  string agent_id = 1;
+  string client_cert_pem = 2;
+  string ca_cert_pem = 3;
+  string cert_serial = 4;
+  int64 cert_not_after_unix = 5;
 }

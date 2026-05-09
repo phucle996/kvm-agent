@@ -1,4 +1,6 @@
 use anyhow::{anyhow, Context, Result};
+use openssl::x509::X509;
+use sha2::{Digest, Sha256};
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
 use tonic::{Code, Request, Status};
 
@@ -82,7 +84,7 @@ pub async fn build_mtls_channel_for_controlplane(
     config: &AppConfig,
     identity: &AgentIdentityState,
 ) -> Result<Channel> {
-    build_mtls_channel_for_target(config, &config.agent.bootstrap_target_addr, identity).await
+    build_mtls_channel_for_target(config, &config.agent.runtime_target_addr, identity).await
 }
 
 pub async fn build_mtls_channel_for_target(
@@ -121,10 +123,13 @@ pub async fn build_mtls_channel_for_target(
 }
 
 async fn build_bootstrap_channel(config: &AppConfig) -> Result<Channel> {
-    // Bootstrap may use plaintext because the agent does not have a client
-    // certificate yet. We preserve explicit schemes when provided, and default
-    // scheme-less bootstrap endpoints to plaintext for backwards compatibility.
-    let target = normalize_bootstrap_endpoint(&config.agent.bootstrap_target_addr);
+    // Bootstrap is unauthenticated on the client side. HTTPS bootstrap can pin
+    // the server CA; cleartext bootstrap must be explicitly requested so it is
+    // visible in packaging and audit trails.
+    let target = normalize_bootstrap_endpoint(
+        &config.agent.bootstrap_target_addr,
+        config.agent.bootstrap_insecure,
+    )?;
     let endpoint = Endpoint::from_shared(target.clone())
         .context("build hypervisor bootstrap endpoint")?
         .connect_timeout(config.agent.connect_timeout);
@@ -141,6 +146,7 @@ async fn build_bootstrap_channel(config: &AppConfig) -> Result<Channel> {
         // not required before enrollment succeeds.
         let ca_pem = std::fs::read(&config.agent.ca_path)
             .with_context(|| format!("read ca bundle {}", config.agent.ca_path))?;
+        verify_bootstrap_ca_pin(config, &ca_pem)?;
         tls = tls.ca_certificate(Certificate::from_pem(ca_pem));
         return Ok(endpoint.tls_config(tls)?.connect().await?);
     }
@@ -148,12 +154,26 @@ async fn build_bootstrap_channel(config: &AppConfig) -> Result<Channel> {
     Ok(endpoint.connect().await?)
 }
 
-fn normalize_bootstrap_endpoint(raw: &str) -> String {
+fn normalize_bootstrap_endpoint(raw: &str, insecure: bool) -> Result<String> {
     let trimmed = raw.trim();
-    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
-        return trimmed.to_string();
+    if trimmed.is_empty() {
+        return Err(anyhow!("AGENT_BOOTSTRAP_TARGET_ADDR must not be empty"));
     }
-    format!("http://{trimmed}")
+    if trimmed.starts_with("https://") {
+        return Ok(trimmed.to_string());
+    }
+    if trimmed.starts_with("http://") {
+        if insecure {
+            return Ok(trimmed.to_string());
+        }
+        return Err(anyhow!(
+            "bootstrap plaintext is disabled; set AGENT_BOOTSTRAP_INSECURE=true for an intentionally cleartext bootstrap listener"
+        ));
+    }
+    if insecure {
+        return Ok(format!("http://{trimmed}"));
+    }
+    Ok(format!("https://{trimmed}"))
 }
 
 fn normalize_mtls_endpoint(raw: &str) -> String {
@@ -185,6 +205,38 @@ fn server_name_for_target(config: &AppConfig, target_addr: &str) -> String {
         .unwrap_or_else(|| host_port.to_string())
 }
 
+fn verify_bootstrap_ca_pin(config: &AppConfig, ca_pem: &[u8]) -> Result<()> {
+    let expected = config
+        .agent
+        .bootstrap_ca_sha256
+        .trim()
+        .replace(':', "")
+        .to_ascii_lowercase();
+    if expected.is_empty() {
+        return Ok(());
+    }
+    let cert = X509::from_pem(ca_pem).context("parse bootstrap CA for sha256 pin")?;
+    let cert_der = cert
+        .to_der()
+        .context("encode bootstrap CA DER for sha256 pin")?;
+    let digest = Sha256::digest(&cert_der);
+    let actual = hex_lower(&digest);
+    if actual != expected {
+        return Err(anyhow!("bootstrap CA sha256 pin mismatch"));
+    }
+    Ok(())
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(TABLE[(byte >> 4) as usize] as char);
+        out.push(TABLE[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
 pub fn is_fatal_bootstrap_error(err: &anyhow::Error) -> bool {
     grpc_status_in_chain(err)
         .map(|status| matches!(status.code(), Code::Unauthenticated | Code::InvalidArgument))
@@ -209,4 +261,26 @@ fn grpc_status_in_chain(err: &anyhow::Error) -> Option<&Status> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_bootstrap_endpoint;
+
+    #[test]
+    fn bootstrap_endpoint_defaults_to_https() {
+        assert_eq!(
+            normalize_bootstrap_endpoint("controlplane.local:9090", false).unwrap(),
+            "https://controlplane.local:9090"
+        );
+    }
+
+    #[test]
+    fn bootstrap_endpoint_rejects_plaintext_without_explicit_insecure() {
+        assert!(normalize_bootstrap_endpoint("http://127.0.0.1:9090", false).is_err());
+        assert_eq!(
+            normalize_bootstrap_endpoint("http://127.0.0.1:9090", true).unwrap(),
+            "http://127.0.0.1:9090"
+        );
+    }
 }

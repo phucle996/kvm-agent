@@ -132,8 +132,13 @@ impl IdentityStore {
             fs::create_dir_all(parent)
                 .with_context(|| format!("create identity directory {}", parent.display()))?;
         }
-        fs::write(path, content)
-            .with_context(|| format!("write identity file {}", path.display()))?;
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("identity");
+        let tmp_path = path.with_file_name(format!(".{file_name}.tmp"));
+        fs::write(&tmp_path, content)
+            .with_context(|| format!("write identity file {}", tmp_path.display()))?;
 
         #[cfg(unix)]
         {
@@ -144,9 +149,12 @@ impl IdentityStore {
             } else {
                 0o640
             };
-            fs::set_permissions(path, fs::Permissions::from_mode(mode))
-                .with_context(|| format!("set identity file permissions {}", path.display()))?;
+            fs::set_permissions(&tmp_path, fs::Permissions::from_mode(mode))
+                .with_context(|| format!("set identity file permissions {}", tmp_path.display()))?;
         }
+
+        fs::rename(&tmp_path, path)
+            .with_context(|| format!("replace identity file {}", path.display()))?;
 
         Ok(())
     }

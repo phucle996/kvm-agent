@@ -18,6 +18,8 @@ ZONE_ID=""
 TOKEN=""
 SERVER_NAME=""
 CA_CERT_SRC=""
+CA_SHA256=""
+BOOTSTRAP_INSECURE="false"
 BINARY_URL_AMD64=""
 BINARY_URL_ARM64=""
 VERSION="latest"
@@ -31,11 +33,13 @@ Usage:
   install.sh --server <grpc-endpoint> --token <bootstrap-token> [options]
 
 Options:
-  --server <value>            Controlplane bootstrap gRPC endpoint, e.g. hypervisor.example.com:9443
+  --server <value>            Controlplane bootstrap gRPC endpoint, e.g. http://hypervisor.example.com:9090
   --runtime-server <value>    Controlplane runtime mTLS gRPC endpoint for assignment resolution, e.g. hypervisor.example.com:9443
   --zone <value>              Zone ID assigned at bootstrap time and written to APP_ZONE_ID
   --token <value>             One-time bootstrap token created by Hypervisor
   --ca <path>                 Path to the Hypervisor CA certificate (PEM); auto-detected if omitted
+  --ca-sha256 <value>         Expected SHA256 fingerprint of the bootstrap CA certificate
+  --bootstrap-insecure        Allow plaintext bootstrap when the bootstrap listener is intentionally cleartext
   --server-name <value>       TLS SNI override; auto-derived from --server if omitted
   --binary-url <value>        Override release tarball URL for linux-amd64
   --binary-url-arm64 <value>  Optional release tarball URL for linux-arm64
@@ -131,9 +135,14 @@ provision_ca_cert() {
     return
   fi
 
-  # 3. Not found — info; agent will use insecure TLS for automatic bootstrap
-  echo "[ca] INFO: No CA certificate found. Agent will start in 'Automatic Bootstrap' mode"
-  echo "[ca]       using Insecure TLS to enroll with the Hypervisor."
+  # 3. Not found. Plaintext bootstrap is still available only when explicitly requested.
+  if [ "$BOOTSTRAP_INSECURE" = "true" ]; then
+    echo "[ca] WARNING: No CA certificate found; bootstrap-insecure mode is enabled." >&2
+    return
+  fi
+  echo "[ca] ERROR: No CA certificate found for secure bootstrap." >&2
+  echo "[ca] Provide --ca <path> or use --bootstrap-insecure when the bootstrap listener is intentionally cleartext." >&2
+  exit 1
 }
 
 install_kvm_dependencies() {
@@ -307,6 +316,14 @@ while [ $# -gt 0 ]; do
       CA_CERT_SRC="${2:-}"
       shift 2
       ;;
+    --ca-sha256)
+      CA_SHA256="${2:-}"
+      shift 2
+      ;;
+    --bootstrap-insecure)
+      BOOTSTRAP_INSECURE="true"
+      shift
+      ;;
     --server-name)
       SERVER_NAME="${2:-}"
       shift 2
@@ -347,6 +364,9 @@ if [ -z "$SERVER" ] || [ -z "$TOKEN" ] || [ -z "$ZONE_ID" ]; then
   usage
   exit 1
 fi
+if [[ "$SERVER" == http://* ]]; then
+  BOOTSTRAP_INSECURE="true"
+fi
 
 # Auto-resolve binary URLs from GitHub releases if not explicitly provided
 if [ -z "$BINARY_URL_AMD64" ]; then
@@ -385,6 +405,8 @@ Dry run:
   zone_id:           ${ZONE_ID}
   server_name:       ${SERVER_NAME}
   ca_cert_src:       ${CA_CERT_SRC:-auto-detect}
+  ca_sha256:         ${CA_SHA256:-not-set}
+  bootstrap_insecure:${BOOTSTRAP_INSECURE}
   binary_url:        ${SELECTED_BINARY_URL}
   grpc_bind_addr:    ${GRPC_BIND_ADDR}
   config_dir:        ${CONFIG_DIR}
@@ -466,6 +488,8 @@ set_env_value "$TMP_ENV" "GRPC_BIND_ADDR" "$GRPC_BIND_ADDR"
 set_env_value "$TMP_ENV" "AGENT_BOOTSTRAP_TARGET_ADDR" "$SERVER"
 set_env_value "$TMP_ENV" "AGENT_RUNTIME_TARGET_ADDR" "$RUNTIME_SERVER"
 set_env_value "$TMP_ENV" "AGENT_SERVER_NAME" "$SERVER_NAME"
+set_env_value "$TMP_ENV" "AGENT_BOOTSTRAP_CA_SHA256" "$CA_SHA256"
+set_env_value "$TMP_ENV" "AGENT_BOOTSTRAP_INSECURE" "$BOOTSTRAP_INSECURE"
 set_env_value "$TMP_ENV" "AGENT_CA_PATH" "${TLS_DIR}/ca.crt"
 set_env_value "$TMP_ENV" "AGENT_CERT_PATH" "${TLS_DIR}/client.crt"
 set_env_value "$TMP_ENV" "AGENT_KEY_PATH" "${TLS_DIR}/client.key"
