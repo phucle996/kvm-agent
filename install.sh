@@ -32,7 +32,7 @@ Usage:
 
 Options:
   --server <value>            Controlplane bootstrap gRPC endpoint, e.g. hypervisor.example.com:9443
-  --runtime-server <value>    Dataplane runtime gRPC endpoint, e.g. http://dataplane-zone-default.example.com:50051
+  --runtime-server <value>    Controlplane runtime mTLS gRPC endpoint for assignment resolution, e.g. hypervisor.example.com:9443
   --zone <value>              Zone ID assigned at bootstrap time and written to APP_ZONE_ID
   --token <value>             One-time bootstrap token created by Hypervisor
   --ca <path>                 Path to the Hypervisor CA certificate (PEM); auto-detected if omitted
@@ -365,7 +365,7 @@ fi
 if [ -z "$RUNTIME_SERVER" ]; then
   RUNTIME_SERVER="$SERVER"
   echo "[config] WARNING: --runtime-server not provided; defaulting runtime endpoint to --server." >&2
-  echo "[config] WARNING: For controlplane bootstrap + dataplane runtime split, set --runtime-server explicitly." >&2
+  echo "[config] WARNING: For bootstrap plaintext + controlplane runtime mTLS split, set --runtime-server explicitly." >&2
 fi
 
 # Auto-derive server name (TLS SNI) from the bootstrap server address if not explicitly set
