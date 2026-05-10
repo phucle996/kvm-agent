@@ -139,13 +139,14 @@ pub async fn build_mtls_channel_for_target(
 }
 
 async fn build_bootstrap_channel(config: &AppConfig) -> Result<Channel> {
-    // Bootstrap is the only pre-enrollment RPC, but it still uses TLS on the
-    // transport. The relaxed rule here is only that client certs do not exist
-    // yet; server trust still comes from the configured CA bundle.
     let target = normalize_bootstrap_endpoint(&config.agent.bootstrap_target_addr)?;
     let endpoint = Endpoint::from_shared(target.clone())
         .context("build hypervisor bootstrap endpoint")?
         .connect_timeout(config.agent.connect_timeout);
+
+    if target.starts_with("http://") {
+        return Ok(endpoint.connect().await?);
+    }
 
     let mut tls = ClientTlsConfig::new();
     tls = tls.domain_name(server_name_for_target(
@@ -163,13 +164,10 @@ fn normalize_bootstrap_endpoint(raw: &str) -> Result<String> {
     if trimmed.is_empty() {
         return Err(anyhow!("AGENT_BOOTSTRAP_TARGET_ADDR must not be empty"));
     }
-    if trimmed.starts_with("https://") {
+    if trimmed.starts_with("https://") || trimmed.starts_with("http://") {
         return Ok(trimmed.to_string());
     }
-    if trimmed.starts_with("http://") {
-        return Err(anyhow!("bootstrap transport must use https"));
-    }
-    Ok(format!("https://{trimmed}"))
+    Ok(format!("http://{trimmed}"))
 }
 
 fn normalize_mtls_endpoint(raw: &str) -> String {
@@ -232,15 +230,26 @@ mod tests {
     use super::normalize_bootstrap_endpoint;
 
     #[test]
-    fn bootstrap_endpoint_defaults_to_https() {
+    fn bootstrap_endpoint_defaults_to_plaintext_when_scheme_missing() {
         assert_eq!(
             normalize_bootstrap_endpoint("controlplane.local:9090").unwrap(),
-            "https://controlplane.local:9090"
+            "http://controlplane.local:9090"
         );
     }
 
     #[test]
-    fn bootstrap_endpoint_rejects_plaintext() {
-        assert!(normalize_bootstrap_endpoint("http://127.0.0.1:9090").is_err());
+    fn bootstrap_endpoint_preserves_plaintext() {
+        assert_eq!(
+            normalize_bootstrap_endpoint("http://127.0.0.1:9090").unwrap(),
+            "http://127.0.0.1:9090"
+        );
+    }
+
+    #[test]
+    fn bootstrap_endpoint_preserves_tls() {
+        assert_eq!(
+            normalize_bootstrap_endpoint("https://127.0.0.1:9443").unwrap(),
+            "https://127.0.0.1:9443"
+        );
     }
 }

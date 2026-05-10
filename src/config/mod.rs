@@ -80,7 +80,7 @@ pub fn load_from_env() -> Result<AppConfig> {
     grpc.validate().map_err(|e| anyhow!(e))?;
 
     let bootstrap_target_addr = optional_env("AGENT_BOOTSTRAP_TARGET_ADDR")
-        .unwrap_or_else(|| "https://127.0.0.1:9443".to_string());
+        .unwrap_or_else(|| "http://127.0.0.1:9090".to_string());
 
     let agent = AgentConfig {
         enabled: true,

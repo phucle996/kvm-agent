@@ -30,10 +30,10 @@ Usage:
   install.sh --controlplane-endpoint <grpc-endpoint> -z <zone-id> --token <bootstrap-token> [options]
 
 Options:
-  --controlplane-endpoint <value>  Controlplane gRPC endpoint used for bootstrap and runtime connect, e.g. https://hypervisor.example.com:9090
+  --controlplane-endpoint <value>  Controlplane bootstrap gRPC endpoint; http:// uses plaintext bootstrap, https:// uses TLS bootstrap
   -z, --zone <value>               Zone ID written to APP_ZONE_ID
-  --token <value>             One-time bootstrap token created by Hypervisor
-  --ca <path>                 Path to the Hypervisor CA certificate (PEM); auto-detected if omitted
+  --token <value>                  One-time bootstrap token created by Hypervisor
+  --ca <path>                      Path to the Hypervisor CA certificate (PEM); required only for https bootstrap and auto-detected if omitted
   --server-name <value>       TLS SNI override; auto-derived from endpoint if omitted
   --version <value>           Agent version label persisted to .env (default: local)
   --grpc-bind <value>         Local gRPC bind address for health checks (default: 0.0.0.0:8081)
@@ -72,6 +72,15 @@ auto_resolve_server_name() {
 # Ensure the given hostname resolves before starting the agent.
 # Do not rewrite /etc/hosts automatically because the controlplane endpoint is
 # typically remote and forcing 127.0.0.1 would break enrollment.
+bootstrap_transport() {
+  local endpoint="$1"
+  if [[ "$endpoint" == https://* ]]; then
+    echo "tls"
+    return
+  fi
+  echo "plaintext"
+}
+
 ensure_dns_resolution() {
   local hostname="$1"
   if [ -z "$hostname" ]; then
@@ -94,6 +103,7 @@ HYPERVISOR_CA_SEARCH_PATHS=(
 
 # Copy the Hypervisor CA certificate into $TLS_DIR/ca.crt with correct ownership.
 # Priority: --ca flag > auto-detected local hypervisor CA.
+# Plaintext bootstrap does not require CA material.
 provision_ca_cert() {
   local dest="${TLS_DIR}/ca.crt"
 
@@ -330,10 +340,7 @@ if [ -z "$CONTROLPLANE_ENDPOINT" ] || [ -z "$TOKEN" ] || [ -z "$ZONE_ID" ]; then
   usage
   exit 1
 fi
-if [[ "$CONTROLPLANE_ENDPOINT" == http://* ]]; then
-  echo "[config] ERROR: --controlplane-endpoint must use https for bootstrap." >&2
-  exit 1
-fi
+BOOTSTRAP_TRANSPORT="$(bootstrap_transport "$CONTROLPLANE_ENDPOINT")"
 
 if [ -z "$SERVER_NAME" ]; then
   SERVER_NAME="$(auto_resolve_server_name "$CONTROLPLANE_ENDPOINT")"
@@ -346,6 +353,7 @@ Dry run:
   controlplane:      ${CONTROLPLANE_ENDPOINT}
   zone_id:           ${ZONE_ID}
   server_name:       ${SERVER_NAME}
+  bootstrap_transport:${BOOTSTRAP_TRANSPORT}
   ca_cert_src:       ${CA_CERT_SRC:-auto-detect}
   build_dir:         ${BUILD_DIR}
   binary_path:       ${LOCAL_BIN_PATH}
@@ -391,7 +399,9 @@ configure_kvm_access "$RUNNER_USER"
 sudo mkdir -p "$CONFIG_DIR" "$TLS_DIR" "$STATE_DIR" "$LOG_DIR"
 sudo chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "$CONFIG_DIR" "$STATE_DIR" "$LOG_DIR"
 sudo chmod 750 "$CONFIG_DIR" "$STATE_DIR" "$LOG_DIR"
-provision_ca_cert
+if [ "$BOOTSTRAP_TRANSPORT" = "tls" ]; then
+  provision_ca_cert
+fi
 
 echo "[3/6] Installing binary..."
 # Stop service if running to avoid "file busy" errors during overwrite
@@ -417,7 +427,11 @@ set_env_value "$TMP_ENV" "AGENT_BOOTSTRAP_TARGET_ADDR" "$CONTROLPLANE_ENDPOINT"
 set_env_value "$TMP_ENV" "AGENT_RUNTIME_TARGET_ADDR" ""
 set_env_value "$TMP_ENV" "AGENT_RUNTIME_TARGET_STATE_PATH" "${STATE_DIR}/runtime-target-addr"
 set_env_value "$TMP_ENV" "AGENT_SERVER_NAME" "$SERVER_NAME"
-set_env_value "$TMP_ENV" "AGENT_CA_PATH" "${TLS_DIR}/ca.crt"
+if [ "$BOOTSTRAP_TRANSPORT" = "tls" ]; then
+  set_env_value "$TMP_ENV" "AGENT_CA_PATH" "${TLS_DIR}/ca.crt"
+else
+  set_env_value "$TMP_ENV" "AGENT_CA_PATH" ""
+fi
 set_env_value "$TMP_ENV" "AGENT_CERT_PATH" "${TLS_DIR}/client.crt"
 set_env_value "$TMP_ENV" "AGENT_KEY_PATH" "${TLS_DIR}/client.key"
 set_env_value "$TMP_ENV" "AGENT_BOOTSTRAP_TOKEN" "$TOKEN"
@@ -450,7 +464,11 @@ Installed ${SERVICE_NAME}
   tls_dir:     ${TLS_DIR}
   systemd:     ${SYSTEMD_UNIT}
   controlplane:${CONTROLPLANE_ENDPOINT}
+  bootstrap_transport:${BOOTSTRAP_TRANSPORT}
   version:     ${VERSION}
+
+Bootstrap transport follows the controlplane endpoint scheme.
+Runtime transport remains mTLS after enrollment.
 
 Note: user ${RUNNER_USER} was added to kvm/libvirt groups when available.
       Log out and back in for group membership to apply to interactive shells.
