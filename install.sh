@@ -12,40 +12,32 @@ STATE_DIR="/var/lib/${SERVICE_NAME}"
 LOG_DIR="/var/log/${SERVICE_NAME}"
 SYSTEMD_UNIT="/etc/systemd/system/${SERVICE_NAME}.service"
 
-SERVER=""
-RUNTIME_SERVER=""
+CONTROLPLANE_ENDPOINT=""
 ZONE_ID=""
 TOKEN=""
 SERVER_NAME=""
 CA_CERT_SRC=""
-CA_SHA256=""
-BOOTSTRAP_INSECURE="false"
-BINARY_URL_AMD64=""
-BINARY_URL_ARM64=""
-VERSION="latest"
+VERSION="local"
 GRPC_BIND_ADDR="0.0.0.0:8081"
 DRY_RUN="false"
-GITHUB_REPO="phucle996/kvm-agent"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+BUILD_DIR="${SCRIPT_DIR}"
+LOCAL_BIN_PATH="${BUILD_DIR}/target/release/${SERVICE_NAME}"
 
 usage() {
   cat <<'EOF'
 Usage:
-  install.sh --server <grpc-endpoint> --token <bootstrap-token> [options]
+  install.sh --controlplane-endpoint <grpc-endpoint> -z <zone-id> --token <bootstrap-token> [options]
 
 Options:
-  --server <value>            Controlplane bootstrap gRPC endpoint, e.g. http://hypervisor.example.com:9090
-  --runtime-server <value>    Controlplane runtime mTLS gRPC endpoint for assignment resolution, e.g. hypervisor.example.com:9443
-  --zone <value>              Zone ID assigned at bootstrap time and written to APP_ZONE_ID
+  --controlplane-endpoint <value>  Controlplane gRPC endpoint used for bootstrap and runtime connect, e.g. https://hypervisor.example.com:9090
+  -z, --zone <value>               Zone ID written to APP_ZONE_ID
   --token <value>             One-time bootstrap token created by Hypervisor
   --ca <path>                 Path to the Hypervisor CA certificate (PEM); auto-detected if omitted
-  --ca-sha256 <value>         Expected SHA256 fingerprint of the bootstrap CA certificate
-  --bootstrap-insecure        Allow plaintext bootstrap when the bootstrap listener is intentionally cleartext
-  --server-name <value>       TLS SNI override; auto-derived from --server if omitted
-  --binary-url <value>        Override release tarball URL for linux-amd64
-  --binary-url-arm64 <value>  Optional release tarball URL for linux-arm64
-  --version <value>           Agent version label persisted to .env
+  --server-name <value>       TLS SNI override; auto-derived from endpoint if omitted
+  --version <value>           Agent version label persisted to .env (default: local)
   --grpc-bind <value>         Local gRPC bind address for health checks (default: 0.0.0.0:8081)
-  --dry-run                   Print planned actions without installing
+  --dry-run                   Print planned actions without building/installing
   -h, --help                  Show this help text
 EOF
 }
@@ -101,7 +93,7 @@ HYPERVISOR_CA_SEARCH_PATHS=(
 )
 
 # Copy the Hypervisor CA certificate into $TLS_DIR/ca.crt with correct ownership.
-# Priority: --ca flag > auto-detected local hypervisor CA > skip with warning.
+# Priority: --ca flag > auto-detected local hypervisor CA.
 provision_ca_cert() {
   local dest="${TLS_DIR}/ca.crt"
 
@@ -134,14 +126,8 @@ provision_ca_cert() {
     sudo chmod 640 "$dest"
     return
   fi
-
-  # 3. Not found. Plaintext bootstrap is still available only when explicitly requested.
-  if [ "$BOOTSTRAP_INSECURE" = "true" ]; then
-    echo "[ca] WARNING: No CA certificate found; bootstrap-insecure mode is enabled." >&2
-    return
-  fi
   echo "[ca] ERROR: No CA certificate found for secure bootstrap." >&2
-  echo "[ca] Provide --ca <path> or use --bootstrap-insecure when the bootstrap listener is intentionally cleartext." >&2
+  echo "[ca] Provide --ca <path> or install the local Hypervisor CA before continuing." >&2
   exit 1
 }
 
@@ -296,15 +282,11 @@ EOF
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --server)
-      SERVER="${2:-}"
+    --controlplane-endpoint|--server)
+      CONTROLPLANE_ENDPOINT="${2:-}"
       shift 2
       ;;
-    --runtime-server)
-      RUNTIME_SERVER="${2:-}"
-      shift 2
-      ;;
-    --zone)
+    -z|--zone)
       ZONE_ID="${2:-}"
       shift 2
       ;;
@@ -316,24 +298,8 @@ while [ $# -gt 0 ]; do
       CA_CERT_SRC="${2:-}"
       shift 2
       ;;
-    --ca-sha256)
-      CA_SHA256="${2:-}"
-      shift 2
-      ;;
-    --bootstrap-insecure)
-      BOOTSTRAP_INSECURE="true"
-      shift
-      ;;
     --server-name)
       SERVER_NAME="${2:-}"
-      shift 2
-      ;;
-    --binary-url)
-      BINARY_URL_AMD64="${2:-}"
-      shift 2
-      ;;
-    --binary-url-arm64)
-      BINARY_URL_ARM64="${2:-}"
       shift 2
       ;;
     --version)
@@ -360,54 +326,29 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-if [ -z "$SERVER" ] || [ -z "$TOKEN" ] || [ -z "$ZONE_ID" ]; then
+if [ -z "$CONTROLPLANE_ENDPOINT" ] || [ -z "$TOKEN" ] || [ -z "$ZONE_ID" ]; then
   usage
   exit 1
 fi
-if [[ "$SERVER" == http://* ]]; then
-  BOOTSTRAP_INSECURE="true"
+if [[ "$CONTROLPLANE_ENDPOINT" == http://* ]]; then
+  echo "[config] ERROR: --controlplane-endpoint must use https for bootstrap." >&2
+  exit 1
 fi
 
-# Auto-resolve binary URLs from GitHub releases if not explicitly provided
-if [ -z "$BINARY_URL_AMD64" ]; then
-  BINARY_URL_AMD64="https://github.com/${GITHUB_REPO}/releases/download/${VERSION}/kvm-agent-linux-amd64.tar.gz"
-fi
-if [ -z "$BINARY_URL_ARM64" ]; then
-  BINARY_URL_ARM64="https://github.com/${GITHUB_REPO}/releases/download/${VERSION}/kvm-agent-linux-arm64.tar.gz"
-fi
-
-ARCH="$(detect_arch)"
-SELECTED_BINARY_URL="$BINARY_URL_AMD64"
-if [ "$ARCH" = "arm64" ] && [ -n "$BINARY_URL_ARM64" ]; then
-  SELECTED_BINARY_URL="$BINARY_URL_ARM64"
-fi
-
-if [ -z "$RUNTIME_SERVER" ]; then
-  RUNTIME_SERVER="$SERVER"
-  echo "[config] WARNING: --runtime-server not provided; defaulting runtime endpoint to --server." >&2
-  echo "[config] WARNING: For bootstrap plaintext + controlplane runtime mTLS split, set --runtime-server explicitly." >&2
-fi
-
-# Auto-derive server name (TLS SNI) from the bootstrap server address if not explicitly set
 if [ -z "$SERVER_NAME" ]; then
-  SERVER_NAME="$(auto_resolve_server_name "$SERVER")"
+  SERVER_NAME="$(auto_resolve_server_name "$CONTROLPLANE_ENDPOINT")"
 fi
-
-# VERSION already defaults to "latest" if not set
 
 if [ "$DRY_RUN" = "true" ]; then
   cat <<EOF
 Dry run:
   service_name:      ${SERVICE_NAME}
-  arch:              ${ARCH}
-  server:            ${SERVER}
-  runtime_server:    ${RUNTIME_SERVER}
+  controlplane:      ${CONTROLPLANE_ENDPOINT}
   zone_id:           ${ZONE_ID}
   server_name:       ${SERVER_NAME}
   ca_cert_src:       ${CA_CERT_SRC:-auto-detect}
-  ca_sha256:         ${CA_SHA256:-not-set}
-  bootstrap_insecure:${BOOTSTRAP_INSECURE}
-  binary_url:        ${SELECTED_BINARY_URL}
+  build_dir:         ${BUILD_DIR}
+  binary_path:       ${LOCAL_BIN_PATH}
   grpc_bind_addr:    ${GRPC_BIND_ADDR}
   config_dir:        ${CONFIG_DIR}
   systemd_unit:      ${SYSTEMD_UNIT}
@@ -417,8 +358,7 @@ fi
 
 RUNNER_USER="$(current_login_user)"
 
-require_cmd curl
-require_cmd tar
+require_cmd cargo
 require_cmd install
 require_cmd systemctl
 require_cmd base32
@@ -431,28 +371,16 @@ TMP_DIR="$(mktemp -d)"
 chmod 755 "${TMP_DIR}"
 trap 'rm -rf "${TMP_DIR}"' EXIT
 
-echo "[1/7] Checking for ${SERVICE_NAME} binary..."
-# Check for local binary first (useful for local development)
-LOCAL_BIN_PATH="./target/release/${SERVICE_NAME}"
-if [ -f "$LOCAL_BIN_PATH" ]; then
-  echo "[1/7] Found local binary at ${LOCAL_BIN_PATH}, skipping download."
-  cp "$LOCAL_BIN_PATH" "${TMP_DIR}/${SERVICE_NAME}"
-else
-  echo "[1/7] Downloading ${SERVICE_NAME} release artifact for ${ARCH}..."
-  if ! curl -fsSL "$SELECTED_BINARY_URL" -o "${TMP_DIR}/agent.tar.gz"; then
-    echo "ERROR: Failed to download binary from ${SELECTED_BINARY_URL}" >&2
-    echo "Hint: If you are developing locally, run 'cargo build --release' first." >&2
-    exit 1
-  fi
-  echo "[2/7] Extracting artifact..."
-  tar -xzf "${TMP_DIR}/agent.tar.gz" -C "$TMP_DIR"
-fi
-if [ ! -f "${TMP_DIR}/${SERVICE_NAME}" ]; then
-  echo "Artifact does not contain ${SERVICE_NAME}" >&2
+echo "[1/6] Building ${SERVICE_NAME} locally..."
+cd "${BUILD_DIR}"
+cargo build --release
+if [ ! -f "$LOCAL_BIN_PATH" ]; then
+  echo "ERROR: build succeeded but binary not found at ${LOCAL_BIN_PATH}" >&2
   exit 1
 fi
+cp "$LOCAL_BIN_PATH" "${TMP_DIR}/${SERVICE_NAME}"
 
-echo "[3/7] Ensuring service user and directories..."
+echo "[2/6] Ensuring service user and directories..."
 if ! getent group "$SERVICE_GROUP" >/dev/null 2>&1; then
   sudo groupadd --system "$SERVICE_GROUP"
 fi
@@ -465,12 +393,12 @@ sudo chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "$CONFIG_DIR" "$STATE_DIR" "$LO
 sudo chmod 750 "$CONFIG_DIR" "$STATE_DIR" "$LOG_DIR"
 provision_ca_cert
 
-echo "[4/7] Installing binary..."
+echo "[3/6] Installing binary..."
 # Stop service if running to avoid "file busy" errors during overwrite
 sudo systemctl stop "${SERVICE_NAME}.service" >/dev/null 2>&1 || true
 sudo install -m 755 "${TMP_DIR}/${SERVICE_NAME}" "$INSTALL_BIN"
 
-echo "[5/7] Writing environment file..."
+echo "[4/6] Writing environment file..."
 TMP_ENV="$(mktemp)"
 if [ -f "$ENV_FILE" ]; then
   sudo cp "$ENV_FILE" "$TMP_ENV"
@@ -485,11 +413,10 @@ set_env_value "$TMP_ENV" "APP_NODE_ID" "$NODE_ID"
 set_env_value "$TMP_ENV" "APP_ZONE_ID" "$ZONE_ID"
 set_env_value "$TMP_ENV" "SHUTDOWN_TIMEOUT_SEC" "15"
 set_env_value "$TMP_ENV" "GRPC_BIND_ADDR" "$GRPC_BIND_ADDR"
-set_env_value "$TMP_ENV" "AGENT_BOOTSTRAP_TARGET_ADDR" "$SERVER"
-set_env_value "$TMP_ENV" "AGENT_RUNTIME_TARGET_ADDR" "$RUNTIME_SERVER"
+set_env_value "$TMP_ENV" "AGENT_BOOTSTRAP_TARGET_ADDR" "$CONTROLPLANE_ENDPOINT"
+set_env_value "$TMP_ENV" "AGENT_RUNTIME_TARGET_ADDR" ""
+set_env_value "$TMP_ENV" "AGENT_RUNTIME_TARGET_STATE_PATH" "${STATE_DIR}/runtime-target-addr"
 set_env_value "$TMP_ENV" "AGENT_SERVER_NAME" "$SERVER_NAME"
-set_env_value "$TMP_ENV" "AGENT_BOOTSTRAP_CA_SHA256" "$CA_SHA256"
-set_env_value "$TMP_ENV" "AGENT_BOOTSTRAP_INSECURE" "$BOOTSTRAP_INSECURE"
 set_env_value "$TMP_ENV" "AGENT_CA_PATH" "${TLS_DIR}/ca.crt"
 set_env_value "$TMP_ENV" "AGENT_CERT_PATH" "${TLS_DIR}/client.crt"
 set_env_value "$TMP_ENV" "AGENT_KEY_PATH" "${TLS_DIR}/client.key"
@@ -502,14 +429,14 @@ rm -f "$TMP_ENV"
 sudo chmod 640 "$ENV_FILE"
 sudo chown "${SERVICE_USER}:${SERVICE_GROUP}" "$ENV_FILE"
 
-echo "[6/7] Installing systemd unit..."
+echo "[5/6] Installing systemd unit..."
 TMP_UNIT="$(mktemp)"
 write_service_file "$TMP_UNIT"
 sudo cp "$TMP_UNIT" "$SYSTEMD_UNIT"
 rm -f "$TMP_UNIT"
 sudo chmod 644 "$SYSTEMD_UNIT"
 
-echo "[7/7] Enabling and restarting ${SERVICE_NAME}..."
+echo "[6/6] Enabling and restarting ${SERVICE_NAME}..."
 ensure_dns_resolution "$SERVER_NAME"
 sudo systemctl daemon-reload
 sudo systemctl enable "${SERVICE_NAME}.service"
@@ -522,7 +449,7 @@ Installed ${SERVICE_NAME}
   env:         ${ENV_FILE}
   tls_dir:     ${TLS_DIR}
   systemd:     ${SYSTEMD_UNIT}
-  target:      ${SERVER}
+  controlplane:${CONTROLPLANE_ENDPOINT}
   version:     ${VERSION}
 
 Note: user ${RUNNER_USER} was added to kvm/libvirt groups when available.

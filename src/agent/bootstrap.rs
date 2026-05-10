@@ -1,6 +1,4 @@
 use anyhow::{anyhow, Context, Result};
-use openssl::x509::X509;
-use sha2::{Digest, Sha256};
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
 use tonic::{Code, Request, Status};
 
@@ -38,10 +36,9 @@ pub async fn bootstrap_enroll(
         .generate_csr(&private_key, &format!("vm-agent:{}", facts.agent_id))
         .context("generate bootstrap csr")?;
 
-    // Bootstrap is the only RPC path that is allowed to connect before the
-    // agent has a client certificate. We keep that rule explicit by using a
-    // dedicated bootstrap channel builder instead of a shared helper that can
-    // silently mix plaintext and mTLS behavior.
+    // Bootstrap is the only RPC path that runs before the agent has a client
+    // certificate. We keep a dedicated channel builder so that pre-enrollment
+    // TLS and post-enrollment mTLS stay visibly separate in code.
     let channel = build_bootstrap_channel(config).await?;
     let mut client = AgentRegistryClient::new(channel);
 
@@ -59,11 +56,17 @@ pub async fn bootstrap_enroll(
     if response.agent_id.trim().is_empty() {
         return Err(anyhow!("bootstrap enrollment returned empty agent id"));
     }
+    if response.runtime_target_addr.trim().is_empty() {
+        return Err(anyhow!(
+            "bootstrap enrollment returned empty runtime target addr"
+        ));
+    }
 
     store
         .save_identity(
             response.client_cert_pem.as_bytes(),
             response.ca_cert_pem.as_bytes(),
+            &response.runtime_target_addr,
         )
         .context("persist bootstrap enrollment")?;
 
@@ -84,7 +87,21 @@ pub async fn build_mtls_channel_for_controlplane(
     config: &AppConfig,
     identity: &AgentIdentityState,
 ) -> Result<Channel> {
-    build_mtls_channel_for_target(config, &config.agent.runtime_target_addr, identity).await
+    let target = identity
+        .runtime_target_addr
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            let configured = config.agent.runtime_target_addr.trim();
+            if configured.is_empty() {
+                None
+            } else {
+                Some(configured)
+            }
+        })
+        .unwrap_or(config.agent.bootstrap_target_addr.as_str());
+    build_mtls_channel_for_target(config, target, identity).await
 }
 
 pub async fn build_mtls_channel_for_target(
@@ -93,8 +110,7 @@ pub async fn build_mtls_channel_for_target(
     identity: &AgentIdentityState,
 ) -> Result<Channel> {
     // Every RPC after bootstrap must use mTLS. If the target does not already
-    // declare a scheme we force it to TLS so the runtime path cannot downgrade
-    // to plaintext by accident.
+    // declare a scheme we force it to TLS so the runtime path cannot downgrade.
     let target = normalize_mtls_endpoint(target_addr);
     let endpoint = Endpoint::from_shared(target)
         .context("build hypervisor mTLS endpoint")?
@@ -123,38 +139,26 @@ pub async fn build_mtls_channel_for_target(
 }
 
 async fn build_bootstrap_channel(config: &AppConfig) -> Result<Channel> {
-    // Bootstrap is unauthenticated on the client side. HTTPS bootstrap can pin
-    // the server CA; cleartext bootstrap must be explicitly requested so it is
-    // visible in packaging and audit trails.
-    let target = normalize_bootstrap_endpoint(
-        &config.agent.bootstrap_target_addr,
-        config.agent.bootstrap_insecure,
-    )?;
+    // Bootstrap is the only pre-enrollment RPC, but it still uses TLS on the
+    // transport. The relaxed rule here is only that client certs do not exist
+    // yet; server trust still comes from the configured CA bundle.
+    let target = normalize_bootstrap_endpoint(&config.agent.bootstrap_target_addr)?;
     let endpoint = Endpoint::from_shared(target.clone())
         .context("build hypervisor bootstrap endpoint")?
         .connect_timeout(config.agent.connect_timeout);
 
-    if target.starts_with("https://") {
-        let mut tls = ClientTlsConfig::new();
-        tls = tls.domain_name(server_name_for_target(
-            config,
-            &config.agent.bootstrap_target_addr,
-        ));
-
-        // Bootstrap still validates the server certificate when a CA bundle is
-        // available locally. The only relaxed rule here is that client certs are
-        // not required before enrollment succeeds.
-        let ca_pem = std::fs::read(&config.agent.ca_path)
-            .with_context(|| format!("read ca bundle {}", config.agent.ca_path))?;
-        verify_bootstrap_ca_pin(config, &ca_pem)?;
-        tls = tls.ca_certificate(Certificate::from_pem(ca_pem));
-        return Ok(endpoint.tls_config(tls)?.connect().await?);
-    }
-
-    Ok(endpoint.connect().await?)
+    let mut tls = ClientTlsConfig::new();
+    tls = tls.domain_name(server_name_for_target(
+        config,
+        &config.agent.bootstrap_target_addr,
+    ));
+    let ca_pem = std::fs::read(&config.agent.ca_path)
+        .with_context(|| format!("read ca bundle {}", config.agent.ca_path))?;
+    tls = tls.ca_certificate(Certificate::from_pem(ca_pem));
+    Ok(endpoint.tls_config(tls)?.connect().await?)
 }
 
-fn normalize_bootstrap_endpoint(raw: &str, insecure: bool) -> Result<String> {
+fn normalize_bootstrap_endpoint(raw: &str) -> Result<String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Err(anyhow!("AGENT_BOOTSTRAP_TARGET_ADDR must not be empty"));
@@ -163,15 +167,7 @@ fn normalize_bootstrap_endpoint(raw: &str, insecure: bool) -> Result<String> {
         return Ok(trimmed.to_string());
     }
     if trimmed.starts_with("http://") {
-        if insecure {
-            return Ok(trimmed.to_string());
-        }
-        return Err(anyhow!(
-            "bootstrap plaintext is disabled; set AGENT_BOOTSTRAP_INSECURE=true for an intentionally cleartext bootstrap listener"
-        ));
-    }
-    if insecure {
-        return Ok(format!("http://{trimmed}"));
+        return Err(anyhow!("bootstrap transport must use https"));
     }
     Ok(format!("https://{trimmed}"))
 }
@@ -203,38 +199,6 @@ fn server_name_for_target(config: &AppConfig, target_addr: &str) -> String {
         .split_once(':')
         .map(|(host, _)| host.to_string())
         .unwrap_or_else(|| host_port.to_string())
-}
-
-fn verify_bootstrap_ca_pin(config: &AppConfig, ca_pem: &[u8]) -> Result<()> {
-    let expected = config
-        .agent
-        .bootstrap_ca_sha256
-        .trim()
-        .replace(':', "")
-        .to_ascii_lowercase();
-    if expected.is_empty() {
-        return Ok(());
-    }
-    let cert = X509::from_pem(ca_pem).context("parse bootstrap CA for sha256 pin")?;
-    let cert_der = cert
-        .to_der()
-        .context("encode bootstrap CA DER for sha256 pin")?;
-    let digest = Sha256::digest(&cert_der);
-    let actual = hex_lower(&digest);
-    if actual != expected {
-        return Err(anyhow!("bootstrap CA sha256 pin mismatch"));
-    }
-    Ok(())
-}
-
-fn hex_lower(bytes: &[u8]) -> String {
-    const TABLE: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        out.push(TABLE[(byte >> 4) as usize] as char);
-        out.push(TABLE[(byte & 0x0f) as usize] as char);
-    }
-    out
 }
 
 pub fn is_fatal_bootstrap_error(err: &anyhow::Error) -> bool {
@@ -270,17 +234,13 @@ mod tests {
     #[test]
     fn bootstrap_endpoint_defaults_to_https() {
         assert_eq!(
-            normalize_bootstrap_endpoint("controlplane.local:9090", false).unwrap(),
+            normalize_bootstrap_endpoint("controlplane.local:9090").unwrap(),
             "https://controlplane.local:9090"
         );
     }
 
     #[test]
-    fn bootstrap_endpoint_rejects_plaintext_without_explicit_insecure() {
-        assert!(normalize_bootstrap_endpoint("http://127.0.0.1:9090", false).is_err());
-        assert_eq!(
-            normalize_bootstrap_endpoint("http://127.0.0.1:9090", true).unwrap(),
-            "http://127.0.0.1:9090"
-        );
+    fn bootstrap_endpoint_rejects_plaintext() {
+        assert!(normalize_bootstrap_endpoint("http://127.0.0.1:9090").is_err());
     }
 }

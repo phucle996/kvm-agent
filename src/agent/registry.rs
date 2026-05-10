@@ -128,9 +128,6 @@ pub async fn connect_hypervisor(config: AppConfig, shutdown: CancellationToken) 
                         is_auth_failure = is_auth,
                         "hypervisor session failed, rotating runtime target"
                     );
-                    if is_auth {
-                        store.clear_identity();
-                    }
                     selector.advance();
                     if selector.current().is_none() {
                         assignment_cache = None;

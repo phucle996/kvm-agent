@@ -18,6 +18,7 @@ message BootstrapEnrollAgentResponse {
   string client_cert_pem = 2;
   string ca_cert_pem = 3;
   google.protobuf.Timestamp cert_not_after = 4;
+  string runtime_target_addr = 5;
 }
 
 message RegisterHost {

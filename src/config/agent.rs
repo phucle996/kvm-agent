@@ -5,9 +5,8 @@ pub struct AgentConfig {
     pub enabled: bool,
     pub bootstrap_target_addr: String,
     pub runtime_target_addr: String,
+    pub runtime_target_state_path: String,
     pub server_name: String,
-    pub bootstrap_ca_sha256: String,
-    pub bootstrap_insecure: bool,
     pub ca_path: String,
     pub cert_path: String,
     pub key_path: String,
@@ -26,20 +25,13 @@ impl AgentConfig {
         if self.bootstrap_target_addr.trim().is_empty() {
             return Err("AGENT_BOOTSTRAP_TARGET_ADDR must not be empty".to_string());
         }
-        if self.runtime_target_addr.trim().is_empty() {
-            return Err("AGENT_RUNTIME_TARGET_ADDR must not be empty".to_string());
-        }
-        if !self.bootstrap_insecure
-            && self
-                .bootstrap_target_addr
-                .trim()
-                .to_ascii_lowercase()
-                .starts_with("http://")
+        if self
+            .bootstrap_target_addr
+            .trim()
+            .to_ascii_lowercase()
+            .starts_with("http://")
         {
-            return Err(
-                "AGENT_BOOTSTRAP_TARGET_ADDR must use https unless AGENT_BOOTSTRAP_INSECURE=true"
-                    .to_string(),
-            );
+            return Err("AGENT_BOOTSTRAP_TARGET_ADDR must use https".to_string());
         }
         if self.ca_path.trim().is_empty() {
             return Err("AGENT_CA_PATH must not be empty".to_string());
@@ -73,6 +65,9 @@ impl AgentConfig {
         }
         if self.command_ledger_path.trim().is_empty() {
             return Err("AGENT_COMMAND_LEDGER_PATH must not be empty".to_string());
+        }
+        if self.runtime_target_state_path.trim().is_empty() {
+            return Err("AGENT_RUNTIME_TARGET_STATE_PATH must not be empty".to_string());
         }
         Ok(())
     }

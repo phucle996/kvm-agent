@@ -18,6 +18,7 @@ pub struct IdentityStore {
     cert_path: PathBuf,
     key_path: PathBuf,
     ca_path: PathBuf,
+    runtime_target_state_path: PathBuf,
 }
 
 impl IdentityStore {
@@ -26,6 +27,7 @@ impl IdentityStore {
             cert_path: PathBuf::from(cfg.cert_path.clone()),
             key_path: PathBuf::from(cfg.key_path.clone()),
             ca_path: PathBuf::from(cfg.ca_path.clone()),
+            runtime_target_state_path: PathBuf::from(cfg.runtime_target_state_path.clone()),
         }
     }
 
@@ -84,18 +86,55 @@ impl IdentityStore {
             Err(_) => None,
         };
 
+        let runtime_target_addr = self.load_runtime_target_addr().ok().flatten();
+
         Ok(AgentIdentityState {
             client_cert_pem,
             client_key_pem,
             ca_bundle_pem,
             cert_not_after,
+            runtime_target_addr,
         })
     }
 
-    pub fn save_identity(&self, client_cert_pem: &[u8], ca_bundle_pem: &[u8]) -> Result<()> {
+    pub fn save_identity(
+        &self,
+        client_cert_pem: &[u8],
+        ca_bundle_pem: &[u8],
+        runtime_target_addr: &str,
+    ) -> Result<()> {
         self.write_file(&self.cert_path, client_cert_pem)?;
         self.write_file(&self.ca_path, ca_bundle_pem)?;
+        self.save_runtime_target_addr(runtime_target_addr)?;
         Ok(())
+    }
+
+    pub fn save_runtime_target_addr(&self, runtime_target_addr: &str) -> Result<()> {
+        let trimmed = runtime_target_addr.trim();
+        if trimmed.is_empty() {
+            return Err(anyhow::anyhow!("runtime target addr must not be empty"));
+        }
+        self.write_file(&self.runtime_target_state_path, trimmed.as_bytes())
+    }
+
+    pub fn load_runtime_target_addr(&self) -> Result<Option<String>> {
+        match fs::read_to_string(&self.runtime_target_state_path) {
+            Ok(value) => {
+                let trimmed = value.trim().to_string();
+                if trimmed.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some(trimmed))
+                }
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(err) => Err(err).with_context(|| {
+                format!(
+                    "read runtime target state {}",
+                    self.runtime_target_state_path.display()
+                )
+            }),
+        }
     }
 
     pub fn has_usable_client_certificate(&self) -> bool {
@@ -120,11 +159,6 @@ impl IdentityStore {
             }
             Err(_) => false,
         }
-    }
-
-    pub fn clear_identity(&self) {
-        let _ = fs::remove_file(&self.cert_path);
-        let _ = fs::remove_file(&self.ca_path);
     }
 
     fn write_file(&self, path: &Path, content: &[u8]) -> Result<()> {

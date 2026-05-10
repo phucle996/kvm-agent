@@ -84,12 +84,11 @@ pub fn load_from_env() -> Result<AppConfig> {
 
     let agent = AgentConfig {
         enabled: true,
-        runtime_target_addr: optional_env("AGENT_RUNTIME_TARGET_ADDR")
-            .unwrap_or_else(|| bootstrap_target_addr.clone()),
+        runtime_target_addr: optional_env("AGENT_RUNTIME_TARGET_ADDR").unwrap_or_default(),
+        runtime_target_state_path: optional_env("AGENT_RUNTIME_TARGET_STATE_PATH")
+            .unwrap_or_else(|| "/var/lib/aurora-kvm-agent/runtime-target-addr".to_string()),
         bootstrap_target_addr,
         server_name: optional_env("AGENT_SERVER_NAME").unwrap_or_default(),
-        bootstrap_ca_sha256: optional_env("AGENT_BOOTSTRAP_CA_SHA256").unwrap_or_default(),
-        bootstrap_insecure: optional_env_bool("AGENT_BOOTSTRAP_INSECURE", false)?,
         ca_path: optional_env("AGENT_CA_PATH")
             .unwrap_or_else(|| "/etc/aurora-kvm-agent/tls/ca.crt".to_string()),
         cert_path: optional_env("AGENT_CERT_PATH")
@@ -186,18 +185,5 @@ fn optional_env(key: &str) -> Option<String> {
     match env::var(key) {
         Ok(v) if !v.trim().is_empty() => Some(v),
         _ => None,
-    }
-}
-
-fn optional_env_bool(key: &str, default: bool) -> Result<bool> {
-    let Some(value) = optional_env(key) else {
-        return Ok(default);
-    };
-    match value.trim().to_ascii_lowercase().as_str() {
-        "1" | "true" | "yes" | "y" | "on" => Ok(true),
-        "0" | "false" | "no" | "n" | "off" => Ok(false),
-        _ => Err(anyhow!(
-            "invalid {key}, expected true/false, 1/0, yes/no, or on/off"
-        )),
     }
 }

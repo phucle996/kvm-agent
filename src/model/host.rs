@@ -71,6 +71,7 @@ pub struct AgentIdentityState {
     pub client_key_pem: Vec<u8>,
     pub ca_bundle_pem: Vec<u8>,
     pub cert_not_after: Option<String>,
+    pub runtime_target_addr: Option<String>,
 }
 
 #[derive(Clone, Debug)]
