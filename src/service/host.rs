@@ -5,7 +5,9 @@ use std::process::Command;
 use serde_json::json;
 
 use crate::config::AppConfig;
-use crate::model::host::{HostFacts, HostRegistration, NetworkInterface, StoragePool};
+use crate::model::host::{
+    CPUPackage, GPUDevice, HostFacts, HostRegistration, MemoryModule, NetworkInterface, StoragePool,
+};
 
 pub fn collect_host_facts(config: &AppConfig) -> HostFacts {
     let node_id = config.app.node_id.clone();
@@ -21,7 +23,7 @@ pub fn collect_host_facts(config: &AppConfig) -> HostFacts {
     let memory_bytes = discover_memory_bytes().unwrap_or(0);
     let ram_model = discover_ram_model();
     let disk_bytes = discover_disk_bytes().unwrap_or(0);
-    let disk_model = discover_disk_model();
+    let _disk_model = discover_disk_model();
     let gpu_model = discover_gpu_model();
     let capabilities_json = json!({
         "mtls": true,
@@ -39,14 +41,31 @@ pub fn collect_host_facts(config: &AppConfig) -> HostFacts {
         capabilities_json,
         cpu_cores,
         cpu_threads,
-        cpu_model,
         memory_bytes,
-        ram_model,
         disk_bytes,
-        disk_model,
         gpu_cores: 0,
         gpu_memory_gib: 0,
-        gpu_model,
+        cpu_packages: vec![CPUPackage {
+            package_index: 0,
+            model: cpu_model,
+            cores: cpu_cores,
+            threads: cpu_threads,
+        }],
+        memory_modules: vec![MemoryModule {
+            slot_index: 0,
+            model: ram_model,
+            size_gib: (memory_bytes / 1024 / 1024 / 1024) as i32,
+        }],
+        gpu_devices: if gpu_model.trim().is_empty() {
+            Vec::new()
+        } else {
+            vec![GPUDevice {
+                device_index: 0,
+                model: gpu_model,
+                memory_gib: 0,
+                core_count: 0,
+            }]
+        },
         network_interfaces,
     }
 }
@@ -60,17 +79,6 @@ pub fn host_registration_from_facts(facts: &HostFacts) -> HostRegistration {
         hypervisor_type: facts.hypervisor_type.clone(),
         agent_version: facts.agent_version.clone(),
         capabilities_json: facts.capabilities_json.clone(),
-        cpu_cores: facts.cpu_cores,
-        cpu_threads: facts.cpu_threads,
-        cpu_model: facts.cpu_model.clone(),
-        memory_bytes: facts.memory_bytes,
-        ram_model: facts.ram_model.clone(),
-        disk_bytes: facts.disk_bytes,
-        disk_model: facts.disk_model.clone(),
-        gpu_cores: facts.gpu_cores,
-        gpu_memory_gib: facts.gpu_memory_gib,
-        gpu_model: facts.gpu_model.clone(),
-        network_interfaces: facts.network_interfaces.clone(),
     }
 }
 

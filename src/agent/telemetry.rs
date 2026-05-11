@@ -137,6 +137,15 @@ fn build_snapshot(
     })
 }
 
+pub fn build_snapshot_for_test(
+    facts: &HostFacts,
+    zone: &str,
+) -> Result<PushHypervisorTelemetrySnapshotRequest> {
+    let mut last_cpu = None;
+    let mut last_io = None;
+    build_snapshot(facts, zone, &mut last_cpu, &mut last_io)
+}
+
 fn collect_vm_metrics(
     node_id: &str,
     zone: &str,
@@ -312,47 +321,4 @@ fn calculate_cpu_percent(prev: &CpuStats, curr: &CpuStats) -> f64 {
     }
     let used_diff = total_diff.saturating_sub(idle_diff);
     (used_diff as f64 / total_diff as f64) * 100.0
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::model::host::HostFacts;
-
-    fn host_facts() -> HostFacts {
-        HostFacts {
-            agent_id: "agent-1".to_string(),
-            host_id: "node-1".to_string(),
-            hostname: "node-1".to_string(),
-            private_ip: "127.0.0.1".to_string(),
-            hypervisor_type: "kvm".to_string(),
-            agent_version: "test".to_string(),
-            capabilities_json: "{}".to_string(),
-            cpu_cores: 4,
-            cpu_threads: 4,
-            cpu_model: "cpu".to_string(),
-            memory_bytes: 8 * 1024 * 1024 * 1024,
-            ram_model: "ram".to_string(),
-            disk_bytes: 50 * 1024 * 1024 * 1024,
-            disk_model: "disk".to_string(),
-            gpu_cores: 0,
-            gpu_memory_gib: 0,
-            gpu_model: "".to_string(),
-            network_interfaces: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn build_snapshot_has_required_identity() {
-        let facts = host_facts();
-        let mut cpu = None;
-        let mut io = None;
-        let snapshot = build_snapshot(&facts, "zone-a", &mut cpu, &mut io).unwrap();
-        assert_eq!(snapshot.schema_version, 1);
-        assert_eq!(snapshot.zone, "zone-a");
-        assert_eq!(snapshot.node_id, "node-1");
-        assert_eq!(snapshot.agent_id, "agent-1");
-        assert!(snapshot.collected_at.is_some());
-        assert!(snapshot.node.is_some());
-    }
 }

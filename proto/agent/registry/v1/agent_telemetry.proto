@@ -26,12 +26,35 @@ message NetworkInterfaceInventory {
   string metadata_json = 7;
 }
 
+message CPUPackageInventory {
+  int32 package_index = 1;
+  string model = 2;
+  int32 cores = 3;
+  int32 threads = 4;
+}
+
+message MemoryModuleInventory {
+  int32 slot_index = 1;
+  string model = 2;
+  int32 size_gib = 3;
+}
+
+message GPUDeviceInventory {
+  int32 device_index = 1;
+  string model = 2;
+  int64 memory_gib = 3;
+  int32 core_count = 4;
+}
+
 message HostInventory {
   string agent_id = 1;
   string host_id = 2;
-  repeated StoragePoolInventory storage_pools = 3;
-  repeated NetworkInterfaceInventory network_interfaces = 4;
-  google.protobuf.Timestamp collected_at = 5;
+  repeated CPUPackageInventory cpu_packages = 3;
+  repeated MemoryModuleInventory memory_modules = 4;
+  repeated GPUDeviceInventory gpu_devices = 5;
+  repeated StoragePoolInventory storage_pools = 6;
+  repeated NetworkInterfaceInventory network_interfaces = 7;
+  google.protobuf.Timestamp collected_at = 8;
 }
 
 message NodeMetricSample {

@@ -386,17 +386,6 @@ fn host_registration_from_facts(facts: &HostFacts) -> HostRegistration {
         hypervisor_type: facts.hypervisor_type.clone(),
         agent_version: facts.agent_version.clone(),
         capabilities_json: facts.capabilities_json.clone(),
-        cpu_cores: facts.cpu_cores,
-        cpu_threads: facts.cpu_threads,
-        memory_bytes: facts.memory_bytes,
-        disk_bytes: facts.disk_bytes,
-        gpu_cores: facts.gpu_cores,
-        gpu_memory_gib: facts.gpu_memory_gib,
-        cpu_model: facts.cpu_model.clone(),
-        ram_model: facts.ram_model.clone(),
-        disk_model: facts.disk_model.clone(),
-        gpu_model: facts.gpu_model.clone(),
-        network_interfaces: facts.network_interfaces.clone(),
     }
 }
 

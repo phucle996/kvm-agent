@@ -8,6 +8,8 @@ use crate::repository::vm::IdentityStore;
 use crate::transport::grpc::pb::agent_registry_v1::agent_registry_client::AgentRegistryClient;
 use crate::transport::grpc::pb::agent_registry_v1::BootstrapEnrollAgentRequest;
 
+// ensure_identity reuses an existing enrolled client identity when present,
+// otherwise it starts the one-time bootstrap enrollment flow.
 pub async fn ensure_identity(
     config: &AppConfig,
     store: &IdentityStore,
@@ -20,6 +22,9 @@ pub async fn ensure_identity(
     bootstrap_enroll(config, store, facts).await
 }
 
+// bootstrap_enroll performs the pre-mTLS enrollment exchange: create CSR,
+// call controlplane bootstrap RPC with the one-time token, then persist the
+// issued client identity for future runtime mTLS connections.
 pub async fn bootstrap_enroll(
     config: &AppConfig,
     store: &IdentityStore,
@@ -83,6 +88,8 @@ pub async fn bootstrap_enroll(
     Ok(state)
 }
 
+// build_mtls_channel_for_controlplane resolves the best runtime target and
+// opens the post-enrollment mTLS channel used for normal agent traffic.
 pub async fn build_mtls_channel_for_controlplane(
     config: &AppConfig,
     identity: &AgentIdentityState,
@@ -104,6 +111,8 @@ pub async fn build_mtls_channel_for_controlplane(
     build_mtls_channel_for_target(config, target, identity).await
 }
 
+// build_mtls_channel_for_target always enforces mTLS for runtime traffic by
+// requiring CA material plus the enrolled client cert/key pair.
 pub async fn build_mtls_channel_for_target(
     config: &AppConfig,
     target_addr: &str,
@@ -138,6 +147,9 @@ pub async fn build_mtls_channel_for_target(
     Ok(endpoint.tls_config(tls)?.connect().await?)
 }
 
+// build_bootstrap_channel opens the initial enrollment transport and follows
+// the configured bootstrap endpoint scheme: plaintext for http, one-way TLS
+// for https before the agent has a client certificate.
 async fn build_bootstrap_channel(config: &AppConfig) -> Result<Channel> {
     let target = normalize_bootstrap_endpoint(&config.agent.bootstrap_target_addr)?;
     let endpoint = Endpoint::from_shared(target.clone())
@@ -159,7 +171,9 @@ async fn build_bootstrap_channel(config: &AppConfig) -> Result<Channel> {
     Ok(endpoint.tls_config(tls)?.connect().await?)
 }
 
-fn normalize_bootstrap_endpoint(raw: &str) -> Result<String> {
+// normalize_bootstrap_endpoint preserves an explicit bootstrap scheme and
+// defaults a bare host:port value to plaintext bootstrap.
+pub fn normalize_bootstrap_endpoint(raw: &str) -> Result<String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Err(anyhow!("AGENT_BOOTSTRAP_TARGET_ADDR must not be empty"));
@@ -170,6 +184,8 @@ fn normalize_bootstrap_endpoint(raw: &str) -> Result<String> {
     Ok(format!("http://{trimmed}"))
 }
 
+// normalize_mtls_endpoint prevents runtime downgrade by forcing the runtime
+// controlplane/dataplane target to use https.
 fn normalize_mtls_endpoint(raw: &str) -> String {
     let trimmed = raw.trim();
     if trimmed.starts_with("https://") {
@@ -181,6 +197,8 @@ fn normalize_mtls_endpoint(raw: &str) -> String {
     format!("https://{trimmed}")
 }
 
+// server_name_for_target picks the TLS SNI/server-name override when set,
+// otherwise derives it from the target host portion of the address.
 fn server_name_for_target(config: &AppConfig, target_addr: &str) -> String {
     let name = config.agent.server_name.trim();
     if !name.is_empty() {
@@ -199,12 +217,16 @@ fn server_name_for_target(config: &AppConfig, target_addr: &str) -> String {
         .unwrap_or_else(|| host_port.to_string())
 }
 
+// is_fatal_bootstrap_error marks bootstrap failures that should stop retrying
+// because the token/request itself is invalid rather than temporarily failing.
 pub fn is_fatal_bootstrap_error(err: &anyhow::Error) -> bool {
     grpc_status_in_chain(err)
         .map(|status| matches!(status.code(), Code::Unauthenticated | Code::InvalidArgument))
         .unwrap_or(false)
 }
 
+// is_auth_failure identifies gRPC authn/authz failures so callers can report
+// credential problems separately from transient transport errors.
 pub fn is_auth_failure(err: &anyhow::Error) -> bool {
     grpc_status_in_chain(err)
         .map(|status| {
@@ -216,6 +238,8 @@ pub fn is_auth_failure(err: &anyhow::Error) -> bool {
         .unwrap_or(false)
 }
 
+// grpc_status_in_chain walks the anyhow error chain to recover the original
+// tonic gRPC status when higher layers wrapped it with extra context.
 fn grpc_status_in_chain(err: &anyhow::Error) -> Option<&Status> {
     for cause in err.chain() {
         if let Some(status) = cause.downcast_ref::<Status>() {
@@ -223,33 +247,4 @@ fn grpc_status_in_chain(err: &anyhow::Error) -> Option<&Status> {
         }
     }
     None
-}
-
-#[cfg(test)]
-mod tests {
-    use super::normalize_bootstrap_endpoint;
-
-    #[test]
-    fn bootstrap_endpoint_defaults_to_plaintext_when_scheme_missing() {
-        assert_eq!(
-            normalize_bootstrap_endpoint("controlplane.local:9090").unwrap(),
-            "http://controlplane.local:9090"
-        );
-    }
-
-    #[test]
-    fn bootstrap_endpoint_preserves_plaintext() {
-        assert_eq!(
-            normalize_bootstrap_endpoint("http://127.0.0.1:9090").unwrap(),
-            "http://127.0.0.1:9090"
-        );
-    }
-
-    #[test]
-    fn bootstrap_endpoint_preserves_tls() {
-        assert_eq!(
-            normalize_bootstrap_endpoint("https://127.0.0.1:9443").unwrap(),
-            "https://127.0.0.1:9443"
-        );
-    }
 }

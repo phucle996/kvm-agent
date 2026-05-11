@@ -24,16 +24,6 @@ pub fn register_frame(facts: &HostFacts, stream_id: &str, seq: u64) -> AgentToHy
             hypervisor_type: facts.hypervisor_type.clone(),
             agent_version: facts.agent_version.clone(),
             capabilities_json: facts.capabilities_json.clone(),
-            cpu_cores: facts.cpu_cores,
-            cpu_threads: facts.cpu_threads,
-            memory_bytes: facts.memory_bytes,
-            disk_bytes: facts.disk_bytes,
-            gpu_cores: facts.gpu_cores,
-            gpu_memory_gib: facts.gpu_memory_gib,
-            cpu_model: facts.cpu_model.clone(),
-            ram_model: facts.ram_model.clone(),
-            disk_model: facts.disk_model.clone(),
-            gpu_model: facts.gpu_model.clone(),
         })),
     }
 }
@@ -104,12 +94,45 @@ pub fn host_inventory_frame(facts: &HostFacts, stream_id: &str, seq: u64) -> Age
         })
         .collect();
 
+    let cpu_packages = facts
+        .cpu_packages
+        .iter()
+        .map(|item| CpuPackageInventory {
+            package_index: item.package_index,
+            model: item.model.clone(),
+            cores: item.cores,
+            threads: item.threads,
+        })
+        .collect();
+    let memory_modules = facts
+        .memory_modules
+        .iter()
+        .map(|item| MemoryModuleInventory {
+            slot_index: item.slot_index,
+            model: item.model.clone(),
+            size_gib: item.size_gib,
+        })
+        .collect();
+    let gpu_devices = facts
+        .gpu_devices
+        .iter()
+        .map(|item| GpuDeviceInventory {
+            device_index: item.device_index,
+            model: item.model.clone(),
+            memory_gib: item.memory_gib,
+            core_count: item.core_count,
+        })
+        .collect();
+
     AgentToHypervisor {
         stream_id: stream_id.to_string(),
         seq,
         message: Some(agent_to_hypervisor::Message::HostInventory(HostInventory {
             agent_id: facts.agent_id.clone(),
             host_id: facts.host_id.clone(),
+            cpu_packages,
+            memory_modules,
+            gpu_devices,
             storage_pools: crate::service::host::discover_storage_pools()
                 .into_iter()
                 .map(|p| StoragePoolInventory {
